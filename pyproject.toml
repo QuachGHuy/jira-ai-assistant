@@ -4,4 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "atlassian-python-api>=4.0.7",
+    "fastapi>=0.136.1",
+    "langchain>=1.2.17",
+    "pydantic-settings>=2.14.0",
+    "qdrant-client>=1.17.1",
+    "uvicorn>=0.46.0",
+]
