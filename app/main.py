@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any
 
 from app.core.config import settings
+from app.services.googlesheet_service import GoogleSheetService
 from app.services.jira_service import JiraService
 from app.services.qdrant_service import QdrantService
 from app.services.voting_service import VotingService
@@ -48,7 +49,7 @@ async def test_jira():
     """Fetch issues directly from Jira to verify connection."""
     service = JiraService()
     jql = 'project = "AIO Development"'
-    issues = service.get_issues_by_jql(jql)
+    issues = await service.get_issues_by_jql(jql)
     return {
         "count": len(issues),
         "all_issues": issues  
@@ -65,7 +66,7 @@ async def sync_jira_to_qdrant():
     
     # 1. Fetch data from Jira
     jql = 'project = "AIO Development"'
-    issues = jira_service.get_issues_by_jql(jql)
+    issues = await jira_service.get_issues_by_jql(jql)
     
     if not issues:
         return {"status": "error", "message": "No issues found to synchronize."}
@@ -113,70 +114,46 @@ async def check_notified(issue_key: str):
 async def test_update_status(issue_key: str, status: str):
     """Update issue status in Jira."""
     service = JiraService()
-    result = service.update_issue_status(issue_key, status)
+    result = await service.update_issue_status(issue_key, status)
     return result
 
 @app.post("/test-update-assignee/{issue_key}")
 async def test_update_assignee(issue_key: str, assignee_id: str):
     """Assign issue to a specific accountId in Jira."""
     service = JiraService()
-    result = service.update_issue_assignee(issue_key, assignee_id)
+    result = await service.update_issue_assignee(issue_key, assignee_id)
     return result
 
-@app.post("/api/v1/test-workflow")
-async def test_workflow(
-    issue_key: str = Query(..., description="Jira Key to test, e.g., APG-123"),
-    description: str = Query(..., description="Task description to find similar issues")
-):
-    """
-    Endpoint dùng để test toàn bộ luồng logic:
-    1. Check notified (UUID v5)
-    2. Search similar issues (Qdrant)
-    3. Weighted Voting (VotingService - No LLM)
-    """
-    qdrant_service = QdrantService()
-    voting_service = VotingService()
+# Khởi tạo service bên ngoài để reuse connection pool
+jira_service = JiraService()
+gsheet_service = GoogleSheetService()
+
+@app.post("/api/v1/full-sync-test")
+async def full_sync_test():
     try:
-        # BƯỚC 1: Kiểm tra xem ticket đã được xử lý chưa (Dùng UUID v5 bên trong)
-        already_processed = await qdrant_service.check_already_notified(issue_key)
+        # 1. Lấy data từ Jira (Dạng list of objects hoặc list of dicts đều được)
+        jql_query = "project = 'AIO Development' AND sprint in openSprints()"
+        raw_issues = await jira_service.get_issues_by_jql(jql_query)
+
+        # 2. Thông tin Sprint
+        sprint_info = {
+            "name": "ARD2026 (04.03 - 04.16)",
+            "start_date": "2026-04-16",
+            "end_date": "2026-04-29"
+        }
         
-        # BƯỚC 2: Tìm kiếm các ticket tương tự từ 247 tickets trên Cloud
-        # Chúng ta lấy 15 ticket tương tự nhất
-        similar_tasks = await qdrant_service.search_similar_issues(
-            query_text=description, 
-            limit=15, 
-            score_threshold=0.62  
+        # 3. Đẩy thẳng sang Service, Service sẽ tự map mọi thứ
+        await gsheet_service.sync_dashboard_upsert(
+            sprint_metadata=sprint_info,
+            issues=raw_issues
         )
 
-        if not similar_tasks:
-            return {
-                "issue_key": issue_key,
-                "already_notified": already_processed,
-                "status": "No similar tasks found to vote."
-            }
-
-        # BƯỚC 3: Thực hiện bầu chọn có trọng số (Toán học thuần túy)
-        voting_decision = await voting_service.get_voting_decision(similar_tasks)
-
-        # Trả về kết quả tổng hợp
-        return {
-            "input": {
-                "issue_key": issue_key,
-                "description": description
-            },
-            "status": {
-                "already_notified": already_processed,
-                "similar_tasks_count": len(similar_tasks)
-            },
-            "ai_decision": voting_decision.model_dump(),
-            "raw_similar_hits": [
-                {"key": t['key'], "assignee": t['assignee'], "score": t['score']} 
-                for t in similar_tasks
-            ]
-        }
+        return {"status": "success", "synced_count": len(raw_issues)}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 if __name__ == "__main__":
