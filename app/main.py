@@ -1,11 +1,12 @@
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
 from app.core.config import settings
 from app.services.jira_service import JiraService
 from app.services.qdrant_service import QdrantService
+from app.services.voting_service import VotingService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,6 +122,62 @@ async def test_update_assignee(issue_key: str, assignee_id: str):
     service = JiraService()
     result = service.update_issue_assignee(issue_key, assignee_id)
     return result
+
+@app.post("/api/v1/test-workflow")
+async def test_workflow(
+    issue_key: str = Query(..., description="Jira Key to test, e.g., APG-123"),
+    description: str = Query(..., description="Task description to find similar issues")
+):
+    """
+    Endpoint dùng để test toàn bộ luồng logic:
+    1. Check notified (UUID v5)
+    2. Search similar issues (Qdrant)
+    3. Weighted Voting (VotingService - No LLM)
+    """
+    qdrant_service = QdrantService()
+    voting_service = VotingService()
+    try:
+        # BƯỚC 1: Kiểm tra xem ticket đã được xử lý chưa (Dùng UUID v5 bên trong)
+        already_processed = await qdrant_service.check_already_notified(issue_key)
+        
+        # BƯỚC 2: Tìm kiếm các ticket tương tự từ 247 tickets trên Cloud
+        # Chúng ta lấy 15 ticket tương tự nhất
+        similar_tasks = await qdrant_service.search_similar_issues(
+            query_text=description, 
+            limit=15, 
+            score_threshold=0.62  
+        )
+
+        if not similar_tasks:
+            return {
+                "issue_key": issue_key,
+                "already_notified": already_processed,
+                "status": "No similar tasks found to vote."
+            }
+
+        # BƯỚC 3: Thực hiện bầu chọn có trọng số (Toán học thuần túy)
+        voting_decision = await voting_service.get_voting_decision(similar_tasks)
+
+        # Trả về kết quả tổng hợp
+        return {
+            "input": {
+                "issue_key": issue_key,
+                "description": description
+            },
+            "status": {
+                "already_notified": already_processed,
+                "similar_tasks_count": len(similar_tasks)
+            },
+            "ai_decision": voting_decision.model_dump(),
+            "raw_similar_hits": [
+                {"key": t['key'], "assignee": t['assignee'], "score": t['score']} 
+                for t in similar_tasks
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
