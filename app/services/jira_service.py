@@ -109,7 +109,7 @@ class JiraService:
                             project=project_name,
                             type=fields.get("issuetype", {}).get("name", ""),
                             assignee=fields.get("assignee", {}).get("emailAddress", "Unassigned") if fields.get("assignee") else "Unassigned",
-                            assigneeId=fields.get("assignee", {}).get("accountId") if fields.get("assignee") else None,
+                            assigneeId=fields.get("assignee", {}).get("accountId") if fields.get("assignee") else "None",
                             status=fields.get("status", {}).get("name", ""),
                             priority=fields.get("priority", {}).get("name", ""),
                             createdAt=fields.get("created"),
@@ -117,10 +117,14 @@ class JiraService:
                             inwardIssueKey=inward_key
                         )
                         
+                        raw_desc = fields.get("description")
+                        if not raw_desc or not str(raw_desc).strip():
+                            raw_desc = "No description provided"
+                            
                         # Prepare content for Vector DB and Slack notifications
                         raw_desc = fields.get("description", "")
                         all_issues.append(JiraIssue(
-                            pointId=self.processor.generate_numeric_id(key),
+                            pointId=self.processor.generate_stable_id(key),
                             metadata=metadata,
                             vectorContent=f"Project: {metadata.project}\nTask: {metadata.task_name}\nDescription: {self.processor.clean_jira_text(raw_desc)}",
                             slackDesc=self.processor.format_for_slack(raw_desc)
