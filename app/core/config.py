@@ -9,10 +9,13 @@ class Settings(BaseSettings):
     # Qdrant
     QDRANT_ENDPOINT_URL: str = ""
     QDRANT_API_TOKEN: str = ""
+    QDRANT_COLLECTION_JIRA: str = "jira_issues"
+    QDRANT_COLLECTION_NOTIFIED: str = "issue_notified_check"
+    QDRANT_VECTOR_SIZE: int = 1024 
 
     # Ollama
-    OLLAMA_BASE_URL: str = ""
-    EMBEDDING_MODEL: str = "bge-m3:567m"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_EMBEDDING_MODEL: str = "bge-m3:567m"
 
     # Slack
     SLACK_BOT_TOKEN: str = ""

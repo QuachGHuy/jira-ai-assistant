@@ -1,5 +1,5 @@
 import re
-import zlib
+import uuid
 
 class TextProcessor:
     @staticmethod
@@ -25,7 +25,7 @@ class TextProcessor:
     @staticmethod
     def format_for_slack(text: str) -> str:
         """
-        Chuyển đổi Jira Markdown sang Slack Mrkdwn để hiển thị đẹp trên Slack[cite: 1].
+        Chuyển đổi Jira Markdown sang Slack Mrkdwn để hiển thị đẹp trên Slack.
         
         Args:
             text (str): Văn bản thô từ Jira description.
@@ -35,7 +35,6 @@ class TextProcessor:
         if not text: 
             return "No description provided."
         
-        # Logic format Slack từ n8n[cite: 1]
         slack_text = re.sub(r'![^!]+!', '', text)
         slack_text = re.sub(r'\[\^[^\\]+\]', '', slack_text)
         slack_text = re.sub(r'\{code[:\w]*\}|\{code\}|\{noformat\}|\{quote\}', '\n```\n', slack_text)
@@ -49,13 +48,10 @@ class TextProcessor:
         return (slack_text[:2500] + "... (Xem thêm tại Jira)") if len(slack_text) > 2500 else slack_text
 
     @staticmethod
-    def generate_numeric_id(text: str) -> int:
+    def generate_stable_id(text: str) -> str:
         """
-        Tạo Point ID dạng số nguyên từ Jira Key[cite: 1].
-        
-        Args:
-            text (str): Jira Key (ví dụ: 'AD-123').
-        Returns:
-            int: Số nguyên 32-bit không âm.
+        Tạo UUID v5 từ Jira Key để làm Point ID.
+        Đảm bảo không trùng lặp và an toàn cho Qdrant Cloud.
         """
-        return zlib.adler32(text.encode()) & 0xffffffff
+        # Sử dụng NAMESPACE_DNS hoặc bất kỳ UUID cố định nào làm gốc
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, text))

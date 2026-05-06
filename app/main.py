@@ -1,22 +1,50 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
+from contextlib import asynccontextmanager
+from typing import Dict, Any
+
 from app.core.config import settings
 from app.services.jira_service import JiraService
+from app.services.qdrant_service import QdrantService
 
-app = FastAPI(title="Jira AI Assistant Backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifecycle management for the FastAPI application.
+    Ensures Qdrant collections are initialized and services are ready.
+    """
+    print("🚀 Initializing Jira AI Assistant Backend...")
+    # Triggering QdrantService setup (checks/creates collections)
+    try:
+        QdrantService()
+        print("✅ Qdrant collections verified and ready.")
+    except Exception as e:
+        print(f"❌ Startup Error: Could not initialize Qdrant: {str(e)}")
+    
+    yield
+
+    print("🛑 Shutting down Jira AI Assistant Backend...")
+
+app = FastAPI(
+    title="Jira AI Assistant Backend",
+    lifespan=lifespan
+)
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
+    """Check connectivity and model configuration."""
     return {
         "status": "healthy",
-        "embedding_model": settings.EMBEDDING_MODEL,
+        "embedding_model": settings.OLLAMA_EMBEDDING_MODEL,
         "jira_url": settings.JIRA_DOMAIN_URL,
         "qdrant_url": settings.QDRANT_ENDPOINT_URL,
-        "ollama_url": settings.OLLAMA_BASE_URL,
     }
+
+# --- JIRA INTEGRATION ENDPOINTS ---
 
 @app.get("/test-jira")
 async def test_jira():
+    """Fetch issues directly from Jira to verify connection."""
     service = JiraService()
     jql = 'project = "AIO Development"'
     issues = service.get_issues_by_jql(jql)
@@ -25,24 +53,74 @@ async def test_jira():
         "all_issues": issues  
     }
 
+@app.post("/sync-jira-qdrant")
+async def sync_jira_to_qdrant():
+    """
+    Triggers the full pipeline: Fetch from Jira -> Embed via Ollama -> Store in Qdrant.
+    This implements the batch upsert logic for efficiency.
+    """
+    jira_service = JiraService()
+    qdrant_service = QdrantService()
+    
+    # 1. Fetch data from Jira
+    jql = 'project = "AIO Development"'
+    issues = jira_service.get_issues_by_jql(jql)
+    
+    if not issues:
+        return {"status": "error", "message": "No issues found to synchronize."}
+
+    # 2. Vectorize and Upsert
+    sync_result = await qdrant_service.upsert_batch_to_qdrant(issues)
+    return {
+        "status": "success",
+        "details": sync_result
+    }
+
+# --- QDRANT & AI SEARCH ENDPOINTS ---
+
+@app.get("/test-search")
+async def test_search(
+    query: str, 
+    threshold: float = 0.62
+):
+    """
+    Tests the 'smart' similarity search with score threshold and filtered payloads.
+    """
+    qdrant_service = QdrantService()
+    # Uses the optimized search logic with assignee extraction
+    results = await qdrant_service.search_similar_issues(
+        query_text=query,
+        score_threshold=threshold
+    )
+    return {
+        "query": query,
+        "threshold_applied": threshold,
+        "result_count": len(results),
+        "suggestions": results
+    }
+
+@app.get("/check-notified/{issue_key}")
+async def check_notified(issue_key: str):
+    """Verify if a ticket has already been notified using the secondary collection."""
+    qdrant_service = QdrantService()
+    is_notified = await qdrant_service.check_already_notified(issue_key)
+    return {"point_id": issue_key, "already_notified": is_notified}
+
+# --- JIRA ACTION ENDPOINTS ---
+
 @app.post("/test-update-status/{issue_key}")
 async def test_update_status(issue_key: str, status: str):
-    """
-    Test logic của node 'Sync APG Issue's Status'.
-    Ví dụ: status='Done' hoặc '31'
-    """
+    """Update issue status in Jira."""
     service = JiraService()
     result = service.update_issue_status(issue_key, status)
-    return {"message": f"Ticket {issue_key} updated", "raw_response": result}
+    return result
 
 @app.post("/test-update-assignee/{issue_key}")
 async def test_update_assignee(issue_key: str, assignee_id: str):
-    """
-    Test logic của node 'Update AD Issue's ASSIGNEE'.
-    """
+    """Assign issue to a specific accountId in Jira."""
     service = JiraService()
     result = service.update_issue_assignee(issue_key, assignee_id)
-    return {"message": f"Ticket {issue_key} assigned to {assignee_id}", "raw_response": result}
+    return result
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

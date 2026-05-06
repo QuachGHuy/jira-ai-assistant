@@ -16,7 +16,7 @@ class JiraMetadata(BaseModel):
     inwardIssue_key: Optional[str] = Field(None, alias="inwardIssueKey")
 
 class JiraIssue(BaseModel):
-    point_id: int = Field(..., alias="pointId")
+    point_id: str = Field(..., alias="pointId")
     metadata: JiraMetadata
     vector_content: str = Field(..., alias="vectorContent")
     slack_desc: Optional[str] = Field(None, alias="slackDesc")
