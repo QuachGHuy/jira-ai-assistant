@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # Google Sheets
     GOOGLE_SHEET_ID: str = ""
+    GOOGLE_SHEET_NAME: str = "Dashboard"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -57,7 +57,7 @@ class JiraService:
             
         return outward_key, inward_key
 
-    def get_issues_by_jql(self, jql: str) -> List[JiraIssue]:
+    async def get_issues_by_jql(self, jql: str) -> List[JiraIssue]:
         """
         Fetch all Jira issues matching a JQL query with pagination support.
         Processes and cleans issue data into a structured JiraIssue format.
@@ -145,7 +145,7 @@ class JiraService:
         
         return all_issues
 
-    def update_issue_status(self, issue_key: str, status_name_or_id: str) -> Dict[str, Any]:
+    async def update_issue_status(self, issue_key: str, status_name_or_id: str) -> Dict[str, Any]:
         """
         Transition a Jira issue to a new status.
         
@@ -167,7 +167,7 @@ class JiraService:
             print(f"❌ {error_msg}")
             return {"status": "error", "message": error_msg}
 
-    def update_issue_assignee(self, issue_key: str, assignee_id: str) -> Dict[str, Any]:
+    async def update_issue_assignee(self, issue_key: str, assignee_id: str) -> Dict[str, Any]:
         """
         Assign an issue to a specific user using their accountId.
         
