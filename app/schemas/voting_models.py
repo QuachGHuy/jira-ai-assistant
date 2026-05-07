@@ -1,8 +1,9 @@
 from pydantic import BaseModel, Field
 
 class VotingResult(BaseModel):
-    recommended_assignee: str = Field(..., alias="recommendedAssignee")
-    assignee_id: str = Field(..., alias="assigneeId")
-    confidence_score: float = Field(..., alias="confidenceScore")
-    reasoning: str = Field(..., alias="reasoning")
-    total_tasks_found: int = Field(..., alias="totalTasksFound")
+    recommended_assignee: str 
+    assignee_id: str 
+    assignee_email: str 
+    confidence_score: float 
+    reasoning: str
+    total_tasks_found: int
