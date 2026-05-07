@@ -1,29 +1,24 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel
+from typing import Optional, Dict
 
 class JiraMetadata(BaseModel):
-    key_link: str = Field(..., alias="keyLink")
-    key: str = Field(..., alias="key")
-    task_name: str = Field(..., alias="taskName")
-    project: str = Field(..., alias="project")
-    issue_type: str = Field(..., alias="type")
-    assignee: Optional[str] = Field(None, alias="assignee")
-    assignee_id: Optional[str] = Field(None, alias="assigneeId")
-    status: str = Field(..., alias="status")
-    priority: str = Field(..., alias="priority")
-    created_at: Optional[str] = Field(None, alias="createdAt")
-    outwardIssue_key: Optional[str] = Field(None, alias="outwardIssueKey")
-    inwardIssue_key: Optional[str] = Field(None, alias="inwardIssueKey")
+    key_link: str
+    key: str
+    task_name: str
+    project: str
+    type: str
+    assignee: Optional[str] = None
+    assignee_id: Optional[str] = None
+    assignee_email: Optional[str] = None
+    status: str
+    priority: str
+    created_at: Optional[str] = None
+    outward_issue_key: Optional[str] = None
+    inward_issue_key: Optional[str] = None
 
 class JiraIssue(BaseModel):
-    point_id: str = Field(..., alias="pointId")
+    point_id: str
     metadata: JiraMetadata
-    vector_content: str = Field(..., alias="vectorContent")
-    slack_desc: Optional[str] = Field(None, alias="slackDesc")
-
-class VotingResult(BaseModel):
-    decision: str = Field(..., alias="decision")
-    suggested_assignee: str = Field(..., alias="suggestedAssignee")
-    suggested_assignee_id: Optional[str] = Field(None, alias="suggestedAssigneeId")
-    confidence: int = Field(..., alias="confidence")
-    voting_stats: dict = Field(..., alias="votingStats")
+    desc: str
+    vector_content: str
+    slack_desc: Optional[str] = None
