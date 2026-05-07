@@ -3,8 +3,9 @@ from app.schemas.voting_models import VotingResult
 
 class VotingService:
     """
-    Service to determine the best assignee for a ticket without using an LLM.
-    Uses a weighted frequency analysis based on similarity scores from vector search.
+    Service responsible for determining the best assignee for a Jira ticket.
+    Instead of using expensive LLM calls, this service implements a weighted 
+    frequency analysis based on semantic similarity scores retrieved from Qdrant.
     """
 
     async def get_voting_decision(
@@ -12,30 +13,36 @@ class VotingService:
         similar_issues: List[Dict[str, Any]]
     ) -> VotingResult:
         """
-        Processes a list of similar issues to find the winner via weighted voting.
+        Analyzes historical data to identify the most suitable candidate via weighted voting.
         
         Args:
-            similar_issues: Results from Qdrant containing 'assignee', 'assigneeId', and 'score'.
+            similar_issues (List[Dict[str, Any]]): List of neighbors from vector search, 
+                each containing 'assignee', 'assignee_id', 'assignee_email', and 'score'.
             
         Returns:
-            A VotingResult object with the top candidate and confidence metrics.
+            VotingResult: A validated result containing the winner and confidence metrics.
         """
+        
+        # Handling the edge case where no similar historical tasks exist
         if not similar_issues:
             return VotingResult(
-                recommendedAssignee="Unassigned",
-                assigneeId="None",
-                confidenceScore=0.0,
+                recommended_assignee="Unassigned",
+                assignee_id="None",
+                assignee_email="None",
+                confidence_score=0.0,
                 reasoning="No historical context found for comparison.",
-                totalTasksFound=0
+                total_tasks_found=0
             )
 
-        # 1. Aggregate scores and occurrences for each assignee
+        # 1. Initialize stats aggregation
+        # We track total scores and frequency count per assignee
         assignee_stats = {}
         total_similarity_sum = 0.0
 
         for issue in similar_issues:
             name = issue.get('assignee', 'Unknown')
-            user_id = issue.get('assigneeId', 'None')
+            assignee_id = issue.get('assignee_id', 'None')
+            assignee_email = issue.get('assignee_email', 'None')
             score = issue.get('score', 0.0)
             
             total_similarity_sum += score
@@ -44,29 +51,36 @@ class VotingService:
                 assignee_stats[name] = {
                     "total_score": 0.0, 
                     "count": 0, 
-                    "id": user_id
+                    "id": assignee_id,
+                    "email": assignee_email
                 }
             
-            # Applying weighted vote: tickets with higher similarity have more influence
+            # Weighted Voting Logic: 
+            # Issues with higher similarity scores (closer vectors) exert more influence 
+            # on the final recommendation than distant ones.
             assignee_stats[name]["total_score"] += score
             assignee_stats[name]["count"] += 1
 
-        # 2. Identify the winner based on the highest aggregate score
+        # 2. Determine the winner
+        # The assignee with the highest aggregate weighted score is chosen
         winner_name = max(assignee_stats, key=lambda k: assignee_stats[k]["total_score"])
         winner_data = assignee_stats[winner_name]
 
-        # 3. Calculate final confidence metric
+        # 3. Compute Confidence Metrics
+        # Confidence is the ratio of the winner's score against the sum of all scores
         confidence = round(winner_data["total_score"] / total_similarity_sum, 2) if total_similarity_sum > 0 else 0.0
         
+        # Constructing a human-readable explanation for the Slack notification
         reasoning = (
             f"Automated selection of {winner_name} based on {winner_data['count']} "
             f"statistically similar historical tasks. Total weighted score: {round(winner_data['total_score'], 2)}."
         )
 
         return VotingResult(
-            recommendedAssignee=winner_name,
-            assigneeId=winner_data["id"],
-            confidenceScore=confidence,
+            recommended_assignee=winner_name,
+            assignee_id=winner_data["id"],
+            assignee_email=winner_data["email"],
+            confidence_score=confidence,
             reasoning=reasoning,
-            totalTasksFound=len(similar_issues)
+            total_tasks_found=len(similar_issues)
         )
