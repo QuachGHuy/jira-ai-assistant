@@ -1,23 +1,25 @@
 import httpx
 import asyncio
 import uuid
+import traceback
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.http import models
+
 from app.core.config import settings
 from app.schemas.jira_models import JiraIssue
 from app.services.text_processor import TextProcessor
 
 class QdrantService:
     """
-    Service to handle vector database operations with Qdrant Cloud 
-    and embedding generation via local Ollama.
+    Service responsible for vector database operations using Qdrant Cloud.
+    Handles embedding generation via local Ollama and similarity searches.
     """
 
     def __init__(self) -> None:
         """
-        Initialize the service with persistent HTTP clients and 
-        setup necessary collections.
+        Initializes the service with persistent HTTP clients and 
+        sets up required Qdrant collections.
         """
         self.client: AsyncQdrantClient = AsyncQdrantClient(
             url=settings.QDRANT_ENDPOINT_URL,
@@ -26,24 +28,27 @@ class QdrantService:
         )
         self.ollama_url = f"{settings.OLLAMA_BASE_URL}/api/embeddings"
         
-        # Increased timeout to 5 minutes to handle very large Jira tickets
+        # Extended timeout (5 mins) to handle large payloads and slow local model inference
         self.http_client = httpx.AsyncClient(timeout=300.0)
         
-        # Semaphore(1) ensures sequential processing to prevent Ollama from crashing (OOM)
+        # Semaphore(1) limits concurrent embedding calls to prevent Ollama Out-Of-Memory (OOM)
         self.sem = asyncio.Semaphore(1) 
         
-        # Initialize collections synchronously at startup
+        # Execute collection setup synchronously on startup
         self._sync_setup_collections()
         self.processor = TextProcessor()
 
     async def close(self) -> None:
-        """Close persistent HTTP and Qdrant client connections."""
+        """
+        Gracefully closes persistent HTTP and Qdrant client connections.
+        """
         await self.http_client.aclose()
         await self.client.close()
 
     def _sync_setup_collections(self) -> None:
         """
-        Synchronously check and initialize required collections.
+        Synchronously verifies and initializes required Qdrant collections.
+        Creates Payload Indexes to optimize filtering during similarity search.
         """
         sync_client = QdrantClient(
             url=settings.QDRANT_ENDPOINT_URL, 
@@ -52,38 +57,83 @@ class QdrantService:
         )
         try:
             existing_col_names = [c.name for c in sync_client.get_collections().collections]
-            required_cols = [
-                settings.QDRANT_COLLECTION_JIRA, 
-                settings.QDRANT_COLLECTION_NOTIFIED
-            ]
-
-            for col in required_cols:
-                if col not in existing_col_names:
-                    print(f"🚀 Initializing collection: {col}")
-                    sync_client.create_collection(
-                        collection_name=col,
-                        vectors_config=models.VectorParams(
-                            size=settings.QDRANT_VECTOR_SIZE, 
-                            distance=models.Distance.COSINE
-                        )
+            
+            # 1. Main JIRA Knowledge Base Collection
+            col_jira = settings.QDRANT_COLLECTION_JIRA
+            if col_jira not in existing_col_names:
+                print(f"🚀 Initializing JIRA collection: {col_jira}")
+                sync_client.create_collection(
+                    collection_name=col_jira,
+                    vectors_config=models.VectorParams(
+                        size=settings.QDRANT_VECTOR_SIZE, 
+                        distance=models.Distance.COSINE
                     )
+                )
+                
+                # Payload Index Schema Setup (Optimizes search filters)
+                keyword_fields = [
+                    "metadata.key", "metadata.project", "metadata.type", 
+                    "metadata.status", "metadata.priority", "metadata.assignee_id", 
+                    "metadata.assignee_email", "metadata.outward_issue_key", 
+                    "metadata.inward_issue_key"
+                ]
+                text_fields = ["metadata.task_name", "metadata.assignee"]
+                date_fields = ["metadata.created_at"]
+
+                # Keyword indexes for exact matches (filtering)
+                for field in keyword_fields:
+                    sync_client.create_payload_index(
+                        collection_name=col_jira,
+                        field_name=field,
+                        field_schema=models.PayloadSchemaType.KEYWORD,
+                    )
+                # Text indexes for partial matches
+                for field in text_fields:
+                    sync_client.create_payload_index(
+                        collection_name=col_jira,
+                        field_name=field,
+                        field_schema=models.PayloadSchemaType.TEXT,
+                    )
+                # DateTime indexes for temporal queries
+                for field in date_fields:
+                    sync_client.create_payload_index(
+                        collection_name=col_jira,
+                        field_name=field,
+                        field_schema=models.PayloadSchemaType.DATETIME,
+                    )
+
+            # 2. NOTIFIED Tracking Collection (Lightweight check for duplicates)
+            col_notified = settings.QDRANT_COLLECTION_NOTIFIED
+            if col_notified not in existing_col_names:
+                print(f"🚀 Initializing NOTIFIED collection: {col_notified}")
+                sync_client.create_collection(
+                    collection_name=col_notified,
+                    vectors_config=models.VectorParams(
+                        size=1, # Minimal size as we only use ID lookups
+                        distance=models.Distance.COSINE
+                    )
+                )
+
         except Exception as e:
             print(f"❌ Qdrant setup error: {str(e)}")
 
     async def get_embedding(self, text: str, retries: int = 3) -> List[float]:
         """
-        Generate a vector embedding using Ollama with exponential backoff retry.
+        Generates a vector embedding using the local Ollama API.
+        Includes a retry mechanism with exponential backoff for resilience.
         
         Args:
-            text: Raw text content to embed.
-            retries: Number of retry attempts on failure.
+            text (str): The raw text to vectorize.
+            retries (int): Number of attempts if the API is busy.
+
         Returns:
-            A list of floats representing the embedding, or empty list on failure.
+            List[float]: The resulting embedding vector or an empty list on failure.
         """
         clean_text = text.strip()
         if not clean_text:
             return []
 
+        # Lock thread to prevent Ollama from processing multiple large embeddings simultaneously
         async with self.sem:
             for attempt in range(retries):
                 try:
@@ -95,9 +145,9 @@ class QdrantService:
                         }
                     )
                     
-                    # Check for 500 errors (often caused by VRAM/RAM exhaustion)
+                    # Handle internal server errors (Commonly VRAM exhaustion)
                     if response.status_code == 500:
-                        raise httpx.HTTPStatusError("Ollama OOM/Internal Error", request=response.request, response=response)
+                        raise httpx.HTTPStatusError("Ollama Busy/OOM", request=response.request, response=response)
                     
                     response.raise_for_status()
                     embedding = response.json().get("embedding", [])
@@ -106,34 +156,35 @@ class QdrantService:
                         return embedding
                         
                 except Exception as e:
-                    # Wait time increases with each attempt: 5s, 10s, 15s
+                    # Exponential backoff: 5s, 10s, 15s
                     wait_time = (attempt + 1) * 5 
-                    print(f"⚠️ Attempt {attempt+1}/{retries} - Ollama busy/OOM. Retrying in {wait_time}s...")
+                    print(f"⚠️ Attempt {attempt+1}/{retries} - Ollama busy. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
             
             return []
 
     async def upsert_batch_to_qdrant(self, issues: List[JiraIssue]) -> Dict[str, Any]:
         """
-        Process and upload multiple Jira issues in a stable, sequential manner.
+        Vectorizes and uploads a batch of Jira issues to Qdrant Cloud.
+        Processes sequentially to ensure stability on limited hardware.
         
         Args:
-            issues: List of JiraIssue objects to vectorize and store.
+            issues (List[JiraIssue]): Validated Jira issue objects.
+
         Returns:
-            Status report including synced count and failed keys.
+            Dict[str, Any]: A report of successful and failed synchronizations.
         """
-        print(f"🔍 Vectorizing {len(issues)} issues with Full Context Mode...")
+        print(f"🔍 Vectorizing {len(issues)} issues...")
         
         all_points = []
         failed_keys = []
 
-        # Sequential loop ensures stability on consumer-grade hardware
         for i, issue in enumerate(issues):
             vector = await self.get_embedding(issue.vector_content)
             
             if vector:
                 all_points.append(models.PointStruct(
-                    id=issue.point_id, # Uses stable UUID v5
+                    id=issue.point_id, # Stable UUID v5 generated by processor
                     vector=vector,
                     payload=issue.metadata.model_dump(by_alias=True)
                 ))
@@ -143,10 +194,9 @@ class QdrantService:
             
             if (i + 1) % 5 == 0:
                 print(f"📊 Progress: {i + 1}/{len(issues)} issues processed.")
-                # Brief rest to prevent hardware overheating
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Rest period to stabilize CPU/GPU load
 
-        # Batch upload to Qdrant Cloud in smaller chunks for network stability
+        # Split into smaller chunks for cloud transmission stability
         total_uploaded = 0
         if all_points:
             chunk_size = 20
@@ -171,46 +221,59 @@ class QdrantService:
     async def search_similar_issues(
         self, 
         query_text: str, 
-        limit: int = 15,
+        limit: int = 20,
         score_threshold: float = 0.62
     ) -> List[Dict[str, Any]]:
         """
-        Find similar issues using the modern query_points API.
+        Performs a semantic similarity search using the modern 'query_points' API.
+        Filters out 'Unassigned' tickets to improve recommendation quality.
         
         Args:
-            query_text: The user query or issue description.
-            limit: Maximum number of suggestions to return.
-            score_threshold: Minimum similarity score.
+            query_text (str): The search query (usually issue description).
+            limit (int): Max number of neighbors to return.
+            score_threshold (float): Similarity floor.
+
         Returns:
-            A list of similar issue metadata.
+            List[Dict[str, Any]]: A list of similar historical issue metadata.
         """
         query_vector = await self.get_embedding(query_text)
         if not query_vector:
             return []
 
         try:
-            # query_points is the modern API for Qdrant (v1.10+)
+            # Filter logic: Exclude tickets where assignee_id is 'None'
+            search_filter = models.Filter(
+                must_not=[
+                    models.FieldCondition(
+                        key="metadata.assignee_id",
+                        match=models.MatchValue(value="None"),
+                    )
+                ]
+            )
+
+            # Execution using the modern v1.10+ Qdrant interface
             search_results = await self.client.query_points(
                 collection_name=settings.QDRANT_COLLECTION_JIRA,
                 query=query_vector, 
-                query_filter=None, # Filtering can be applied here if needed
+                query_filter=search_filter,
                 limit=limit,
                 score_threshold=score_threshold
             )
             
+            print(f"🔎 Qdrant returned {len(search_results.points)} neighbors.")
+
             suggestions = []
-            # Extract results from the .points attribute
             for hit in search_results.points:
-                if hit.payload:
+                payload = hit.payload
+                if payload:
                     suggestions.append({
-                        "key": hit.payload.get("key"),
-                        "taskName": hit.payload.get("taskName"),
-                        "assignee": hit.payload.get("assignee") or hit.payload.get("owner"),
-                        "assigneeId": hit.payload.get("assigneeId") or hit.payload.get("ownerId"),
+                        "key": payload.get("key"),
+                        "assignee": payload.get("assignee"),
+                        "assignee_email": payload.get("assignee_email"), 
+                        "assignee_id": payload.get("assignee_id"),       
                         "score": round(hit.score, 4)
                     })
             
-            print(f"🔎 Found {len(suggestions)} candidates above threshold {score_threshold}.")
             return suggestions
 
         except Exception as e:
@@ -219,8 +282,14 @@ class QdrantService:
 
     async def check_already_notified(self, issue_key: str) -> bool:
         """
-        Check if an issue has already triggered a notification.
-        Uses UUID transformation to ensure stable lookup.
+        Checks if a notification has already been dispatched for a specific ticket.
+        Utilizes fast ID-based retrieval.
+        
+        Args:
+            issue_key (str): The Jira issue key (e.g., 'APG-136').
+
+        Returns:
+            bool: True if previously notified, False otherwise.
         """
         point_id = self.processor.generate_stable_id(issue_key)
         try:
@@ -230,13 +299,18 @@ class QdrantService:
             )
             return len(results) > 0
         except Exception as e:
-            print(f"⚠️ Check notified failed for {issue_key}: {str(e)}")
+            print(f"⚠️ Notification check failed for {issue_key}: {str(e)}")
             return False
 
     async def mark_as_notified(self, issue_key: str) -> bool:
         """
-        Mark an issue as notified by storing its UUID in a tracking collection.
-        Uses a zero-vector placeholder as per Qdrant requirements.
+        Records a ticket key in the tracking collection to prevent duplicate notifications.
+        
+        Args:
+            issue_key (str): The Jira issue key.
+
+        Returns:
+            bool: Success status of the record operation.
         """
         point_id = self.processor.generate_stable_id(issue_key)
         try:
@@ -244,11 +318,11 @@ class QdrantService:
                 collection_name=settings.QDRANT_COLLECTION_NOTIFIED,
                 points=[models.PointStruct(
                     id=point_id, 
-                    vector=[0.0] * settings.QDRANT_VECTOR_SIZE, 
-                    payload={"key": issue_key, "processed": True}
+                    vector=[0.0], # Placeholder vector for tracking collection
+                    payload={"key": issue_key}
                 )]
             )
             return True
         except Exception as e:
-            print(f"❌ Notification marking failed for {issue_key}: {str(e)}")
+            print(f"❌ Mark notified failed for {issue_key}: {str(e)}")
             return False
