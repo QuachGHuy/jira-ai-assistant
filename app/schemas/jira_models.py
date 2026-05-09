@@ -20,5 +20,6 @@ class JiraIssue(BaseModel):
     point_id: str
     metadata: JiraMetadata
     desc: str
+    content: str
     vector_content: str
-    slack_desc: Optional[str] = None
+    slack_desc: str 

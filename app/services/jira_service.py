@@ -144,6 +144,15 @@ class JiraService:
                             point_id=self.processor.generate_stable_id(key),
                             metadata=metadata,
                             desc=cleaned_desc,
+                            content=(
+                                f"Project: {metadata.project}\n"
+                                f"Task: {metadata.task_name}\n"
+                                f"Type: {metadata.type}\n"
+                                f"Status: {metadata.status}\n"
+                                f"Priority: {metadata.priority}\n"
+                                f"Description: {cleaned_desc}\n"
+                                f"Assignee: {metadata.assignee}"
+                            ),
                             vector_content=(
                                 f"Project: {metadata.project}\n"
                                 f"Task: {metadata.task_name}\n"
