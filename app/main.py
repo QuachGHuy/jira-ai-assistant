@@ -1,160 +1,116 @@
 import uvicorn
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Query, BackgroundTasks
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.core.config import settings
-from app.services.googlesheet_service import GoogleSheetService
 from app.services.jira_service import JiraService
+from app.services.slack_service import SlackService
 from app.services.qdrant_service import QdrantService
 from app.services.voting_service import VotingService
+from app.services.googlesheet_service import GoogleSheetService
+from app.services.workflow_service import WorkflowService
+
+# Import router xử lý tương tác từ Slack
+from app.api.v1 import slack
+
+# --- Dependency Provider ---
+def get_workflow_service() -> WorkflowService:
+    """
+    Nhà máy sản xuất WorkflowService. 
+    Tất cả các Service đơn lẻ được khởi tạo một lần và 'tiêm' vào Workflow.
+    """
+    return WorkflowService(
+        jira=JiraService(),
+        slack=SlackService(),
+        qdrant=QdrantService(),
+        gsheet=GoogleSheetService(),
+        voting=VotingService()
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifecycle management for the FastAPI application.
-    Ensures Qdrant collections are initialized and services are ready.
+    Quản lý vòng đời ứng dụng.
+    Kiểm tra kết nối Qdrant ngay khi khởi động.
     """
-    print("🚀 Initializing Jira AI Assistant Backend...")
-    # Triggering QdrantService setup (checks/creates collections)
+    print("🚀 [STARTUP] Jira AI Assistant is waking up...")
     try:
-        QdrantService()
-        print("✅ Qdrant collections verified and ready.")
+        # Kiểm tra Qdrant
+        q_svc = QdrantService()
+        print("✅ [STARTUP] Qdrant Collections verified.")
     except Exception as e:
-        print(f"❌ Startup Error: Could not initialize Qdrant: {str(e)}")
+        print(f"❌ [STARTUP] Critical Error: {str(e)}")
     
     yield
-
-    print("🛑 Shutting down Jira AI Assistant Backend...")
+    print("🛑 [SHUTDOWN] Jira AI Assistant is going to sleep...")
+    await q_svc.close()  # Đóng kết nối Qdrant khi tắt ứng dụng
 
 app = FastAPI(
-    title="Jira AI Assistant Backend",
+    title="Jira AI Assistant API",
+    version="1.0.0",
     lifespan=lifespan
 )
 
+# --- REGISTER ROUTERS ---
+# Gắn router xử lý Slack Interactive (/api/v1/slack/interactive)
+app.include_router(slack.router, prefix="/api/v1/slack", tags=["Slack"])
+
+# --- BASIC ENDPOINTS ---
+
 @app.get("/health")
-async def health_check() -> Dict[str, Any]:
-    """Check connectivity and model configuration."""
+async def health_check():
     return {
-        "status": "healthy",
-        "embedding_model": settings.OLLAMA_EMBEDDING_MODEL,
-        "jira_url": settings.JIRA_DOMAIN_URL,
-        "qdrant_url": settings.QDRANT_ENDPOINT_URL,
-    }
-
-# --- JIRA INTEGRATION ENDPOINTS ---
-
-@app.get("/test-jira")
-async def test_jira():
-    """Fetch issues directly from Jira to verify connection."""
-    service = JiraService()
-    jql = 'project = "AIO Development"'
-    issues = await service.get_issues_by_jql(jql)
-    return {
-        "count": len(issues),
-        "all_issues": issues  
-    }
-
-@app.post("/sync-jira-qdrant")
-async def sync_jira_to_qdrant():
-    """
-    Triggers the full pipeline: Fetch from Jira -> Embed via Ollama -> Store in Qdrant.
-    This implements the batch upsert logic for efficiency.
-    """
-    jira_service = JiraService()
-    qdrant_service = QdrantService()
-    
-    # 1. Fetch data from Jira
-    jql = 'project = "AIO Development"'
-    issues = await jira_service.get_issues_by_jql(jql)
-    
-    if not issues:
-        return {"status": "error", "message": "No issues found to synchronize."}
-
-    # 2. Vectorize and Upsert
-    sync_result = await qdrant_service.upsert_batch_to_qdrant(issues)
-    return {
-        "status": "success",
-        "details": sync_result
-    }
-
-# --- QDRANT & AI SEARCH ENDPOINTS ---
-
-@app.get("/test-search")
-async def test_search(
-    query: str, 
-    threshold: float = 0.62
-):
-    """
-    Tests the 'smart' similarity search with score threshold and filtered payloads.
-    """
-    qdrant_service = QdrantService()
-    # Uses the optimized search logic with assignee extraction
-    results = await qdrant_service.search_similar_issues(
-        query_text=query,
-        score_threshold=threshold
-    )
-    return {
-        "query": query,
-        "threshold_applied": threshold,
-        "result_count": len(results),
-        "suggestions": results
-    }
-
-@app.get("/check-notified/{issue_key}")
-async def check_notified(issue_key: str):
-    """Verify if a ticket has already been notified using the secondary collection."""
-    qdrant_service = QdrantService()
-    is_notified = await qdrant_service.check_already_notified(issue_key)
-    return {"point_id": issue_key, "already_notified": is_notified}
-
-# --- JIRA ACTION ENDPOINTS ---
-
-@app.post("/test-update-status/{issue_key}")
-async def test_update_status(issue_key: str, status: str):
-    """Update issue status in Jira."""
-    service = JiraService()
-    result = await service.update_issue_status(issue_key, status)
-    return result
-
-@app.post("/test-update-assignee/{issue_key}")
-async def test_update_assignee(issue_key: str, assignee_id: str):
-    """Assign issue to a specific accountId in Jira."""
-    service = JiraService()
-    result = await service.update_issue_assignee(issue_key, assignee_id)
-    return result
-
-# Khởi tạo service bên ngoài để reuse connection pool
-jira_service = JiraService()
-gsheet_service = GoogleSheetService()
-
-@app.post("/api/v1/full-sync-test")
-async def full_sync_test():
-    try:
-        # 1. Lấy data từ Jira (Dạng list of objects hoặc list of dicts đều được)
-        jql_query = "project = 'AIO Development' AND sprint in openSprints()"
-        raw_issues = await jira_service.get_issues_by_jql(jql_query)
-
-        # 2. Thông tin Sprint
-        sprint_info = {
-            "name": "ARD2026 (04.03 - 04.16)",
-            "start_date": "2026-04-16",
-            "end_date": "2026-04-29"
+        "status": "online",
+        "environment": "development",
+        "integrations": {
+            "jira": settings.JIRA_DOMAIN_URL,
+            "qdrant": settings.QDRANT_ENDPOINT_URL,
+            "gsheet": "Connected"
         }
-        
-        # 3. Đẩy thẳng sang Service, Service sẽ tự map mọi thứ
-        await gsheet_service.sync_dashboard_upsert(
-            sprint_metadata=sprint_info,
-            issues=raw_issues
-        )
+    }
 
-        return {"status": "success", "synced_count": len(raw_issues)}
+# --- WORKFLOW ENDPOINTS (Sử dụng WorkflowService làm cốt lõi) ---
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/v1/sync/knowledge-base")
+async def sync_knowledge_base(
+    project: str = "AIO Development",
+    workflow: WorkflowService = Depends(get_workflow_service)
+):
+    """Đồng bộ Jira sang Qdrant để AI có dữ liệu học."""
+    return await workflow.sync_jira_to_qdrant(project_key=project)
 
+@app.post("/api/v1/sync/dashboard")
+async def sync_dashboard(
+    workflow: WorkflowService = Depends(get_workflow_service)
+):
+    """Đồng bộ ticket Sprint hiện tại lên Google Sheets Dashboard."""
+    return await workflow.sync_gsheet_report()
 
+@app.post("/api/v1/workflow/auto-assign")
+async def run_auto_assignment(
+    jql: Optional[str] = Query(None, description="Custom JQL for filtering issues"),
+    workflow: WorkflowService = Depends(get_workflow_service)
+):
+    """Kích hoạt luồng AI gợi ý Assignee và gửi thông báo Slack."""
+    return await workflow.auto_issue_assignment(custom_jql=jql)
 
+@app.post("/api/v1/workflow/status-sync")
+async def run_status_sync(
+    workflow: WorkflowService = Depends(get_workflow_service)
+):
+    """Đồng bộ trạng thái từ ticket AD sang APG."""
+    return await workflow.sync_apg_status_from_ad()
+
+# --- SEARCH & DEBUG ENDPOINTS ---
+
+@app.get("/api/v1/ai/search")
+async def search_similar_tasks(
+    query: str,
+    workflow: WorkflowService = Depends(get_workflow_service)
+):
+    """Tìm kiếm các task tương tự trong quá khứ (Dành cho LangChain Tool sau này)."""
+    return await workflow.qdrant.search_similar_issues(query_text=query)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
