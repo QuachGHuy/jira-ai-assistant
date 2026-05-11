@@ -55,9 +55,7 @@ class QdrantService:
         """
         print("🔌 Closing Qdrant and HTTP client connections...")
         try:
-            # Close the persistent httpx client
             await self.http_client.aclose()
-            # Close the asynchronous Qdrant client
             await self.client.close()
             print("✅ All connections closed successfully.")
         except Exception as e:
@@ -67,8 +65,8 @@ class QdrantService:
         """
         Verifies, creates collections, and sets up advanced payload indexing.
         
-        Specifically configures:
-        - Nested Metadata Indexes: For strict filtering on Jira fields (Project, Status, etc.)
+        Configures:
+        - Nested Metadata Indexes: For strict filtering on Jira fields inside the 'metadata' object.
         - Root Text Index: For full-text search capabilities on the 'content' field.
         - Datetime Index: To support temporal queries (e.g., tasks created after a certain date).
         """
@@ -92,7 +90,7 @@ class QdrantService:
                     )
                 )
                 
-                # Metadata fields lồng trong 'metadata' object (Keyword dùng để lọc chính xác)
+                # Metadata fields nested inside the 'metadata' object (Keyword for exact matching)
                 keyword_fields = [
                     "metadata.key", "metadata.project", "metadata.type", 
                     "metadata.status", "metadata.priority", "metadata.assignee_id", 
@@ -100,12 +98,12 @@ class QdrantService:
                     "metadata.inward_issue_key"
                 ]
                 
-                # Các trường hỗ trợ tìm kiếm văn bản (Partial/Text matching)
+                # Fields supporting text matching/partial search
                 text_fields = ["metadata.task_name", "metadata.assignee", "content"]
 
                 print("📝 Creating payload indexes for optimized Jira filtering...")
                 
-                # 1. Tạo Keyword Indexes cho việc lọc dữ liệu nghiêm ngặt
+                # 1. Create Keyword Indexes for strict filtering
                 for field in keyword_fields:
                     sync_client.create_payload_index(
                         collection_name=col_jira,
@@ -113,7 +111,7 @@ class QdrantService:
                         field_schema=models.PayloadSchemaType.KEYWORD,
                     )
                 
-                # 2. Tạo Text Indexes hỗ trợ tìm kiếm từ khóa trong content/metadata
+                # 2. Create Text Indexes for keyword/description search
                 for field in text_fields:
                     sync_client.create_payload_index(
                         collection_name=col_jira,
@@ -121,7 +119,7 @@ class QdrantService:
                         field_schema=models.PayloadSchemaType.TEXT,
                     )
                 
-                # 3. Tạo Datetime Index phục vụ truy vấn theo khoảng thời gian
+                # 3. Create Datetime Index for time-range queries
                 sync_client.create_payload_index(
                     collection_name=col_jira,
                     field_name="metadata.created_at",
@@ -129,7 +127,7 @@ class QdrantService:
                 )
                 print("✅ All Jira indexes initialized.")
 
-            # Khởi tạo collection theo dõi thông báo đã gửi
+            # Setup dedicated collection for tracking sent notifications
             col_notified = settings.QDRANT_COLLECTION_NOTIFIED
             if col_notified not in existing_col_names:
                 print(f"🚀 Initializing NOTIFIED collection: {col_notified}")
@@ -156,14 +154,14 @@ class QdrantService:
         if not clean_text:
             return []
 
-        # Bắt buộc thực hiện tuần tự để ổn định mức sử dụng VRAM cục bộ
+        # Enforce sequential execution to ensure local VRAM stability
         async with self.sem:
             try:
                 response = await self.http_client.post(
                     self.ollama_url,
                     json={
                         "model": settings.OLLAMA_EMBEDDING_MODEL, 
-                        # Thay thế xuống dòng bằng khoảng trắng vì một số model embedding hoạt động tốt hơn với text phẳng
+                        # Replace newlines with spaces as some embedding models prefer linear input
                         "prompt": clean_text.replace("\n", " ")
                     }
                 )
@@ -177,8 +175,9 @@ class QdrantService:
         """
         Vectorizes and uploads a batch of Jira issues to Qdrant.
         
-        Dữ liệu được tổ chức để giữ 'content' ở root giúp AI Agent dễ dàng truy cập,
-        trong khi lồng tất cả metadata kỹ thuật vào đối tượng 'metadata' để index gọn gàng.
+        Data is structured to keep 'content' at the root for easy AI access,
+        while nesting all technical Jira fields inside a 'metadata' object for 
+        clean, scalable indexing.
 
         Args:
             issues (List[JiraIssue]): A list of validated Jira issue models.
@@ -193,9 +192,9 @@ class QdrantService:
             vector = await self.get_embedding(issue.vector_content)
             
             if vector:
-                # Cấu trúc payload: Root 'content' + Nested 'metadata'
+                # Payload Structure: Root 'content' + Nested 'metadata'
                 payload = {
-                    "content": issue.vector_content,
+                    "content": issue.content,
                     "metadata": issue.metadata.model_dump(by_alias=True)
                 }
                 
@@ -209,7 +208,7 @@ class QdrantService:
 
         if all_points:
             try:
-                # Sử dụng upsert hàng loạt để đạt hiệu suất cao nhất
+                # Use bulk upsert for optimal cloud transmission performance
                 await self.client.upsert(
                     collection_name=settings.QDRANT_COLLECTION_JIRA,
                     points=all_points
@@ -232,9 +231,9 @@ class QdrantService:
         """
         Performs a semantic similarity search with optional metadata filtering.
         
-        Hỗ trợ 'Hybrid Search' bằng cách sử dụng filter_obj do Agent tạo ra để 
-        thu hẹp không gian tìm kiếm (VD: theo dự án hoặc trạng thái cụ thể)
-        trước khi tính toán khoảng cách vector.
+        Supports 'Hybrid Search' by applying the AI-generated filter_obj to narrow 
+        down the search space (e.g., specific projects/status) before calculating 
+        vector distances.
 
         Args:
             query_text (str): The search query or task description.
@@ -249,7 +248,7 @@ class QdrantService:
         if not query_vector:
             return []
 
-        # Chuyển đổi dictionary filter (từ Agent) thành Qdrant Filter model
+        # Parse raw dictionary filter (from Agent) into Qdrant Filter models
         search_filter = None
         if filter_obj:
             try:
@@ -274,18 +273,19 @@ class QdrantService:
             for hit in results.points:
                 payload = hit.payload
 
+                # Safeguard against missing payloads to prevent runtime errors
                 if payload is None:  
                     print(f"⚠️ Skipping hit with ID {hit.id} due to missing payload.")
                     continue
                 
                 meta = payload.get("metadata", {})
                 
-                # Trích xuất các trường quan trọng làm context cho AI
+                # Extract essential fields to provide high-quality context for the AI
                 suggestions.append({
                     "key": meta.get("key"),
                     "task_name": meta.get("task_name"),
                     "assignee": meta.get("assignee"),
-                    "content": payload.get("content"), # Cung cấp raw text cho quy trình RAG
+                    "content": payload.get("content"), # Provides raw text for the RAG process
                     "score": round(hit.score, 4)
                 })
             return suggestions
@@ -297,13 +297,13 @@ class QdrantService:
     async def check_already_notified(self, issue_key: str) -> bool:
         """
         Determines if a specific Jira ticket has already been processed.
-        Used to prevent duplicate Slack notifications.
+        Utilizes fast ID-based retrieval to prevent duplicate Slack notifications.
 
         Args:
-            issue_key (str): The Jira key (e.g., 'AD-123').
+            issue_key (str): The unique Jira key (e.g., 'AD-123').
 
         Returns:
-            bool: True if already notified, False otherwise.
+            bool: True if previously notified, False otherwise.
         """
         point_id = self.processor.generate_stable_id(issue_key)
         try:
@@ -318,13 +318,13 @@ class QdrantService:
 
     async def mark_as_notified(self, issue_key: str) -> bool:
         """
-        Records a notification event in a lightweight tracking collection.
+        Persists a record of a notification event in the tracking collection.
 
         Args:
-            issue_key (str): The Jira key that was notified.
+            issue_key (str): The Jira key that was successfully notified.
 
         Returns:
-            bool: Success status of the operation.
+            bool: Success status of the record operation.
         """
         point_id = self.processor.generate_stable_id(issue_key)
         try:
@@ -332,7 +332,7 @@ class QdrantService:
                 collection_name=settings.QDRANT_COLLECTION_NOTIFIED,
                 points=[models.PointStruct(
                     id=point_id, 
-                    vector=[0.0], # Vector giả cho mục đích theo dõi ID
+                    vector=[0.0], # Placeholder vector for tracking collection
                     payload={"key": issue_key}
                 )]
             )
