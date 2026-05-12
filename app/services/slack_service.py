@@ -35,7 +35,7 @@ class SlackService:
         link = meta.get("key_link") or f"{settings.JIRA_DOMAIN_URL}/browse/{key}"
         
         # Retrieve technical description; formatted in blockquote in the UI
-        description = ticket.get("slack_desc") or "No tchnical details provided."
+        description = ticket.get("slack_desc") or "No technical details provided."
         
         # Extract recommendation details for the packed callback string
         assignee_email = meta.get("assignee_email", "None")

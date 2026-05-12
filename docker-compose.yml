@@ -35,9 +35,24 @@ services:
     depends_on:
       - app
 
+  9router:
+    image: 9router/9router:latest
+    container_name: 9router
+    ports:
+      - "20128:20128"
+    environment:
+      - ROUTER_PORT=20128
+      - ROUTER_AUTH_TOKEN=secret_token
+    volumes:
+      # Map vào đúng cái tên mà 9router mong đợi
+      - ./9router_config.json:/app/9router.config.json
+    networks:
+      - app-network
+
 networks:
   app-network:
     driver: bridge
 
 volumes:
   ollama_data: # Lưu trữ model vĩnh viễn trên máy host
+

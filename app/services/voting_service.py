@@ -40,9 +40,9 @@ class VotingService:
         total_similarity_sum = 0.0
 
         for issue in similar_issues:
-            name = issue.get('assignee', 'Unknown')
-            assignee_id = issue.get('assignee_id', 'None')
-            assignee_email = issue.get('assignee_email', 'None')
+            name = issue.get('assignee')
+            assignee_id = issue.get('assignee_id')
+            assignee_email = issue.get('assignee_email')
             score = issue.get('score', 0.0)
             
             total_similarity_sum += score
