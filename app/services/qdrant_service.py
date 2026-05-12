@@ -285,6 +285,8 @@ class QdrantService:
                     "key": meta.get("key"),
                     "task_name": meta.get("task_name"),
                     "assignee": meta.get("assignee"),
+                    "assignee_email": meta.get("assignee_email"),
+                    "assignee_id": meta.get("assignee_id"),
                     "content": payload.get("content"), # Provides raw text for the RAG process
                     "score": round(hit.score, 4)
                 })
