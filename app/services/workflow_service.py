@@ -159,7 +159,8 @@ class WorkflowService:
                     "assignee_id": decision.assignee_id,
                     "confidence_score": decision.confidence_score
                 })
-
+                
+                print(f"🔍 AI Recommendation for {issue_key}: {decision.recommended_assignee} with confidence {decision.confidence_score}")
                 # 6. Interaction: Dispatch to Slack for human approval
                 success_ts = await self.slack.send_ticket_notification(issue_dict)
                 

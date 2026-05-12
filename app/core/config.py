@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_NOTIFIED: str = "issue_notified_check"
     QDRANT_VECTOR_SIZE: int = 1024 
 
+    # 9Router
+    ROUTER_BASE_URL: str = "http://localhost:20128/v1"
+    ROUTER_CHAT_MODEL: str = "chat-model"
+    ROUTER_API_KEY: str = ""
+
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_EMBEDDING_MODEL: str = "bge-m3:567m"
