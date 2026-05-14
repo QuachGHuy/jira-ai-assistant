@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional, Dict
 from langchain_openai import ChatOpenAI
 from app.schemas.tool_models import SearchInput
@@ -7,106 +8,44 @@ class QueryAnalyzer:
         self.analyzer = llm.with_structured_output(SearchInput)
 
     async def analyze(self, user_input: str) -> SearchInput:
-        system_prompt = """
-            Role: You are a specialized assistant for performing Filtered Vector Search on Jira tickets. Your goal is to retrieve accurate data by combining semantic meaning (Vector) with strict constraints (Metadata).
-        ⚠️ CRITICAL CONSTRAINTS (MUST FOLLOW)
+        now = datetime.now()
+        current_context = now.strftime("%A, %b %d, %Y") 
+        system_prompt = f"""
+            Role: Senior Jira Analyst. Parse queries to JSON for Hybrid Vector Search (Qdrant).
+            
+            # Context
+            - Today: {current_context}
+            - Current Year: {now.year}
+            - Rules: Relative dates (today, last week, etc.) must be calculated from today. Use ISO 8601.
+            - Metadata: Case-sensitive (e.g., "Done").
 
-            The "Split" Mandate: You MUST separate the user's request into two parts:
+            # Output Schema (Return exact JSON)
+            1. "input" (String): Semantic topic/ID.
+            2. "filter" (Object): Qdrant "must" structure.
 
-                input (Semantic): The core topic, keywords, or intent (e.g., "ASR issues", "blockers"). NEVER leave this empty.
+            # Metadata Mapping
+            - ID: metadata.key (Keyword: "APG-127")
+            - Project: metadata.project (Keyword: "Others")
+            - Owner: metadata.owner (Keyword: "email@workforceoptimizer.com")
+            - Status: metadata.status (Keyword: "To Do", "Done")
+            - Priority: metadata.priority (Keyword: "S1-Critical")
+            - Type: metadata.type (Keyword: "Bug", "Task")
+            - Date: metadata.created_at (Date range)
 
-                filter (Strict): The metadata scope (Project, Owner, Status, ID).
+            # Constraints
+            1. Split Mandate: "input" = Intent/Topic. "filter" = Strict metadata. No semantic terms in filter.
+            2. ID Rule: If Ticket ID (e.g., APG-144) is found, put it in BOTH "input" and "metadata.key".
+            3. Dates: Convert "since Monday" or "last month" to "range" {{ "gte": "ISO-DATE" }}.
 
-            Current Date Context: The current year is 2026. All relative date queries (e.g., "this month", "since last week") must be calculated based on April 2026.
+            # Examples
+            User: "Find login bugs in project Others"
+            Result: {{"input": "login problems", "filter": {{"must": [{{"key": "metadata.project", "match": {{"value": "Others"}}}}, {{"key": "metadata.type", "match": {{"value": "Bug"}}}}]}}}}
 
-            Case Sensitivity: Metadata values are strictly case-sensitive. Use exact strings like "Shift Rostering" or "Done".
+            User: "Check APG-127"
+            Result: {{"input": "APG-127", "filter": {{"must": [{{"key": "metadata.key", "match": {{"value": "APG-127"}}}}]}}}}
 
-            No Intent in Filter: Do NOT put semantic search terms (e.g., "bug fixing") inside the filter object. Only exact keys and values are allowed.
-
-        🛠 PARAMETER DEFINITION
-        1. input (String)
-
-            Content: Descriptive keywords for semantic search.
-
-            Rule: If the user provides a specific ID (e.g., "AD-278"), the input should be that ID.
-
-        2. filter (Object - Qdrant JSON)
-
-        Use the {"must": [...]} structure with match for keywords and range for dates.
-        Field	Metadata Key	Type	Examples
-        Ticket ID	metadata.key	Keyword	"AD-278", "AD-28"
-        Project	metadata.project	Keyword	"Shift Rostering", "Others"
-        Assignee	metadata.owner	Keyword	"quang@workforceoptimizer.com"
-        Status	metadata.status	Keyword	"To Do", "Done", "Stuck"
-        Priority	metadata.priority	Keyword	"S1-Critical", "S3-Moderate"
-        Issue Type	metadata.type	Keyword	"Epic", "Task", "Subtask"
-        Created At	metadata.created_at	Date	ISO 8601 strings
-        🧠 STEP-BY-STEP THINKING PROCESS
-
-        Before generating the parameters, perform these steps internally:
-
-            Identify the Scope: Is there a specific Project, Owner, or ID? (Add to filter).
-
-            Identify the Topic: What is the user actually looking for? (Add to input).
-
-            Handle IDs: If an ID is present, it MUST go into both input and metadata.key to ensure 100% precision.
-
-            Format Dates: Convert relative time to ISO 8601 for the range filter.
-
-        📖 EXAMPLES
-        Example 1: Topic + Scope
-
-            User: "Find tickets about 'ASR to Rust' in project 'Shift Rostering'"
-
-            Result:
-
-        JSON
-
-        {
-        "input": "ASR to Rust",
-        "filter": {
-            "must": [
-            { "key": "metadata.project", "match": { "value": "Shift Rostering" } }
-            ]
-        }
-        }
-
-        Example 2: Specific Ticket ID (Exact Search)
-
-            User: "Show me ticket AD-278"
-
-            Result:
-
-        JSON
-
-        {
-        "input": "AD-278",
-        "filter": {
-            "must": [
-            { "key": "metadata.key", "match": { "value": "AD-278" } }
-            ]
-        }
-        }
-
-        Example 3: Date Range + Status
-
-            User: "Which tasks are 'Done' by Quang since April 1st, 2026?"
-
-            Result:
-
-        JSON
-
-        {
-        "input": "Completed tasks",
-        "filter": {
-            "must": [
-            { "key": "metadata.owner", "match": { "value": "quang@workforceoptimizer.com" } },
-            { "key": "metadata.status", "match": { "value": "Done" } },
-            { "key": "metadata.created_at", "range": { "gte": "2026-04-01T00:00:00Z" } }
-            ]
-        }
-        }
-
+            User: "Tasks by Huy since yesterday"
+            Result: {{"input": "assigned tasks", "filter": {{"must": [{{"key": "metadata.owner", "match": {{"value": "huy@workforceoptimizer.com"}}}}, {{"key": "metadata.created_at", "range": {{"gte": "2026-05-13T00:00:00Z"}}}}]}}}}
         """
         
         return await self.analyzer.ainvoke([
