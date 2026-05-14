@@ -260,7 +260,25 @@ class WorkflowService:
 
                 # Step B: Link AD Development Ticket
                 ad_jql = f'project = "AIO Development" AND linkedIssue = "{apg_key}"'
-                ad_issues = await self.jira.get_issues_by_jql(ad_jql)
+
+                # --- Polling Logic: Wait for Jira Automation to clone APG to AD ticket ---
+                # Automation in Jira is asynchronous and may take a few seconds to create the linked AD task.
+                # We poll every 2 seconds (up to 5 times) to handle this race condition.
+                ad_issues = []
+                max_retries = 5
+
+                for attempt in range(max_retries):
+                    print(f"🔍 [Attempt {attempt + 1}] Searching for AD task linked to {apg_key}...")
+                    
+                    ad_jql = f'project = "AIO Development" AND linkedIssue = "{apg_key}"'
+                    ad_issues = await self.jira.get_issues_by_jql(ad_jql)
+                    
+                    if ad_issues:
+                        print(f"✅ Linked AD task found: {ad_issues[0].metadata.key}")
+                        break
+                    
+                    # Wait 2s before the next check, totaling up to 10s if needed
+                    await asyncio.sleep(2)
 
                 if ad_issues:
                     ad_key = ad_issues[0].metadata.key
