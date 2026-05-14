@@ -25,6 +25,7 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - app-network
+    
 
   tunnel:
     image: cloudflare/cloudflared:latest
