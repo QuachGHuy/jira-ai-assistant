@@ -7,7 +7,6 @@ services:
     env_file:
       - .env
     environment:
-      # Quan trọng: Trỏ host của Ollama sang tên service trong Docker
       - OLLAMA_BASE_URL=http://ollama:11434
     volumes:
       - .:/app
@@ -25,6 +24,13 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - app-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 
+              capabilities: [gpu]
     
 
   tunnel:
@@ -44,7 +50,6 @@ services:
     environment:
       - ROUTER_PORT=20128
     volumes:
-      # Map vào đúng cái tên mà 9router mong đợi
       - ./9router_config.json:/app/9router.config.json
     networks:
       - app-network
@@ -54,5 +59,5 @@ networks:
     driver: bridge
 
 volumes:
-  ollama_data: # Lưu trữ model vĩnh viễn trên máy host
+  ollama_data: 
 
