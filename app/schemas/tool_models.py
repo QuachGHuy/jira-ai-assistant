@@ -1,9 +1,15 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
+class AnalyzeRequest(BaseModel):
+    text: str
+
 class SearchInput(BaseModel):
-    vector_query: str = Field(description="The core semantic search string")
-    filters: Optional[Dict] = Field(default=None, description="Metadata filters")
+    input: str = Field(description="The core semantic search string")
+    filter: Optional[Dict[str, Any]] = Field(
+        default=None, 
+        description="The strict metadata constraints in Qdrant format"
+    )
 
 class JQLInput(BaseModel):
     jql: Optional[str] = Field(None, description="Jira Query Language string. Example: 'project = \"APG\" AND status = \"TO DO\"'")

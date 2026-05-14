@@ -21,21 +21,18 @@ class WorkflowToolkit:
         """Returns a list of tools ready for the LangChain Agent."""
         
         @tool
-        async def search_knowledge_base(query: str, **kwargs) -> str: # Thêm **kwargs để an toàn
+        async def search_knowledge_base(query: str, **kwargs) -> str:
             """
             Search for historical issues, solutions, or experts in the Knowledge Base.
             Input: ONLY a natural language question (e.g., 'Find login bugs in project AIO').
             The tool will automatically handle filtering and semantic search.
             """
-            # BƯỚC 1: Gọi Sub-Agent bóc tách query thô
-            # Con Analyzer này sẽ tự tách ra vector_query và filters
+
             structured_data = await self.analyzer.analyze(query)
-            
-            # BƯỚC 2: Gọi service search. 
-            # Huy nhớ kiểm tra tên tham số trong qdrant_service.py (query_text hay query?)
+
             results = await self.workflow_service.qdrant.search_similar_issues(
-                query_text=structured_data.vector_query,
-                filter_obj=structured_data.filters
+                query_text=structured_data.input,
+                filter_obj=structured_data.filter
             )
             
             return f"Found results for '{query}': {str(results)}"

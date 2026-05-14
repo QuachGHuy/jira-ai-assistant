@@ -17,14 +17,8 @@ from app.ai_engine.agents.jira_agent import JiraAgent  # <-- Đừng quên impor
 
 # Import router xử lý tương tác từ Slack
 from app.api.v1 import slack
+from app.schemas.chat_models import ChatRequest, ChatResponse
 
-# --- 1. SCHEMAS (Phải định nghĩa trước khi dùng trong Routes) ---
-class ChatRequest(BaseModel):
-    message: str
-    chat_history: Optional[List[dict]] = []
-
-class ChatResponse(BaseModel):
-    reply: str
 
 # --- 2. DEPENDENCY PROVIDER ---
 def get_workflow_service() -> WorkflowService:
@@ -106,6 +100,45 @@ async def chat(request: ChatRequest):
     except Exception as e:
         print(f"❌ Agent Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+from app.schemas.tool_models import AnalyzeRequest, SearchInput
+from app.ai_engine.agents.query_analyzer import QueryAnalyzer
+
+def get_analyzer():
+    # Đảm bảo Huy đã setup LLM (OpenAI/9router) trước khi truyền vào đây
+    from app.core.config import settings
+    from langchain_openai import ChatOpenAI
+    
+    llm = ChatOpenAI(
+        base_url=settings.ROUTER_BASE_URL,
+        api_key=settings.ROUTER_API_KEY,
+        model=settings.ROUTER_CHAT_MODEL
+    )
+    return QueryAnalyzer(llm=llm)
+
+@app.post("/api/v1/ai/analyze", tags=["Debug"])
+async def test_query_analysis(
+    request: AnalyzeRequest,
+    analyzer: QueryAnalyzer = Depends(get_analyzer)
+):
+    """
+    Endpoint này dùng để test khả năng bóc tách Metadata và Semantic Input 
+    của con Agent trước khi thực hiện Search thực tế.
+    """
+    try:
+        print(f"🧪 Testing input: {request.text}")
+        
+        # Gọi hàm analyze (hàm này trả về SearchInput model)
+        result = await analyzer.analyze(request.text)
+        
+        return {
+            "status": "success",
+            "raw_query": request.text,
+            "parsed_data": result.model_dump() # Trả về dict gồm input và filter
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
 # --- WORKFLOW ENDPOINTS ---
 
 @app.post("/api/v1/sync/knowledge-base")
@@ -128,6 +161,7 @@ async def search_similar_tasks(
     workflow: WorkflowService = Depends(get_workflow_service)
 ):
     return await workflow.qdrant.search_similar_issues(query_text=query)
+
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
