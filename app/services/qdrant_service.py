@@ -139,6 +139,62 @@ class QdrantService:
         except Exception as e:
             print(f"❌ Qdrant setup error: {str(e)}")
 
+    def _build_filters(self, filter_dict: Optional[Dict[str, Any]]) -> Optional[models.Filter]:
+        """
+        Translates LLM-generated JSON filters into Qdrant-native Filter objects.
+        
+        This function acts as a semantic bridge between the QueryAnalyzer's output 
+        and the Qdrant SDK, ensuring type safety and schema validation for both 
+        inclusive (must) and exclusive (must_not) logical conditions.
+
+        Args:
+            filter_dict: A dictionary containing 'must' and/or 'must_not' keys 
+                        with nested match/range conditions.
+
+        Returns:
+            A qdrant_client.models.Filter object or None if no valid conditions are found.
+        """
+        # Early exit if the input is empty or malformed
+        if not filter_dict or not isinstance(filter_dict, dict):
+            return None
+        
+        # Define which fields are indexed as "text" in your Qdrant schema
+        TEXT_FIELDS = ["metadata.task_name", "metadata.assignee", "content"]
+        filter_params = {}
+      
+        # Define the logical operators we want to process
+        for op in ["must", "must_not", "should"]:
+            if op in filter_dict and isinstance(filter_dict[op], list):
+                conditions = []
+                for item in filter_dict[op]:
+                    field_key = item.get("key")
+                    if not field_key: continue
+
+                    try:
+                        if "match" in item:
+                            match_val = item["match"].get("value")
+                            if match_val is None: continue
+
+                            # SMART LOGIC: Switch between MatchText and MatchValue
+                            if field_key in TEXT_FIELDS:
+                                # Use MatchText for partial string matching on 'text' indexes
+                                match_obj = models.MatchText(text=str(match_val))
+                            else:
+                                # Use MatchValue for exact matching on 'keyword' indexes
+                                match_obj = models.MatchValue(value=match_val)
+                            
+                            conditions.append(models.FieldCondition(key=field_key, match=match_obj))
+
+                        elif "range" in item:
+                            conditions.append(models.FieldCondition(key=field_key, range=item["range"]))
+                    except Exception as e:
+                        print(f"⚠️ Filtering error for {field_key}: {e}")
+                
+                if conditions:
+                    filter_params[op] = conditions
+
+        return models.Filter(**filter_params) if filter_params else None
+
     async def get_embedding(self, text: str) -> List[float]:
         """
         Generates a numerical vector embedding for the input text using local Ollama.
@@ -226,75 +282,104 @@ class QdrantService:
         query_text: str, 
         filter_obj: Optional[Dict[str, Any]] = None,
         limit: int = 10,
-        score_threshold: float = 0.62
+        score_threshold: float = 0.3
     ) -> List[Dict[str, Any]]:
         """
-        Performs a semantic similarity search with optional metadata filtering.
+        Performs an advanced Hybrid Search on Jira tickets within Qdrant.
         
-        Supports 'Hybrid Search' by applying the AI-generated filter_obj to narrow 
-        down the search space (e.g., specific projects/status) before calculating 
-        vector distances.
+        The search follows a 'Double-Path' logic:
+        1. Exact Match Path: Uses the 'Scroll' API if a specific Ticket ID is detected.
+        This bypasses vector calculations for 100% precision and lower latency.
+        2. Semantic Path: Uses Vector Similarity search for topic-based or intent-based 
+        queries when no exact ID is found or matched.
 
         Args:
-            query_text (str): The search query or task description.
-            filter_obj (Optional[Dict]): A raw Qdrant JSON filter object.
-            limit (int): Maximum number of results to return.
-            score_threshold (float): Minimum similarity score (0.0 to 1.0).
+            query_text (str): The semantic keywords or Ticket ID extracted by the analyzer.
+            filter_obj (Optional[Dict]): The raw JSON filter structure from the Agent.
+            limit (int): Maximum number of results to retrieve.
+            score_threshold (float): Minimum similarity score for semantic results (0.0 - 1.0).
 
         Returns:
-            List[Dict[str, Any]]: A list of similar issues including raw content.
+            List[Dict[str, Any]]: A list of standardized ticket objects with metadata and scores.
         """
-        query_vector = await self.get_embedding(query_text)
-        if not query_vector:
-            return []
+        
+        # Step 1: Translate the raw JSON filter into Qdrant Model objects
+        # This utility ensures type-safety for Keyword and Range conditions
+        search_filter = self._build_filters(filter_obj)
+        
+        # Step 2: Check for high-precision lookup requirement (Ticket ID)
+        # If the filter specifies a unique key, we prioritize metadata retrieval over vector search
+        has_exact_id = False
+        if filter_obj and "must" in filter_obj:
+            has_exact_id = any(item.get("key") == "metadata.key" for item in filter_obj["must"])
 
-        # Parse raw dictionary filter (from Agent) into Qdrant Filter models
-        search_filter = None
-        if filter_obj:
-            try:
-                search_filter = models.Filter(**filter_obj)
-                print(f"🔍 Executing search with dynamic filters: {filter_obj}")
-            except Exception as e:
-                print(f"⚠️ Failed to parse Agent filter: {e}")
+        results_to_process = []
 
-        try:
-            results = await self.client.query_points(
+        # --- PATH A: EXACT ID SEARCH (SCROLL API) ---
+        if has_exact_id:
+            print(f"🎯 Exact ID detected in filter. Executing high-precision Scroll...")
+            # Scroll is more efficient for filtering by unique keys (no distance calculation needed)
+            scroll_results, _ = await self.client.scroll(
                 collection_name=settings.QDRANT_COLLECTION_JIRA,
-                query=query_vector, 
-                query_filter=search_filter,
-                limit=limit,
-                score_threshold=score_threshold,
-                with_payload=True
+                scroll_filter=search_filter,
+                limit=1,
+                with_payload=True,
+                with_vectors=False
             )
+            if scroll_results:
+                # Assign a perfect score (1.0) to exact metadata matches
+                results_to_process = [(hit, 1.0) for hit in scroll_results]
+
+        # --- PATH B: SEMANTIC SEARCH (VECTOR QUERY) ---
+        # Triggered if no ID is provided or if the ID was not found in the initial scroll
+        if not results_to_process:
+            # Generate embedding for the semantic part of the query
+            query_vector = await self.get_embedding(query_text)
+            if not query_vector:
+                return []
+
+            print(f"🔍 Executing semantic search for: '{query_text}' with filters: {filter_obj}")
+            try:
+                # Performs a K-Nearest Neighbors (KNN) search filtered by metadata constraints
+                search_res = await self.client.query_points(
+                    collection_name=settings.QDRANT_COLLECTION_JIRA,
+                    query=query_vector, 
+                    query_filter=search_filter,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=True
+                )
+                results_to_process = [(hit, hit.score) for hit in search_res.points]
+            except Exception as e:
+                print(f"❌ Qdrant Vector search failed: {str(e)}")
+                return []
+
+        # Step 3: Standardize the output format for downstream AI processing
+        print(f"🔎 Found {len(results_to_process)} matching candidates.")
+        
+        standardized_results = []
+        for hit, score in results_to_process:
+            payload = hit.payload
+            if not payload:
+                continue
+                
+            meta = payload.get("metadata", {})
             
-            print(f"🔎 Found {len(results.points)} neighbors matching context.")
-
-            suggestions = []
-            for hit in results.points:
-                payload = hit.payload
-
-                # Safeguard against missing payloads to prevent runtime errors
-                if payload is None:  
-                    print(f"⚠️ Skipping hit with ID {hit.id} due to missing payload.")
-                    continue
-                
-                meta = payload.get("metadata", {})
-                
-                # Extract essential fields to provide high-quality context for the AI
-                suggestions.append({
-                    "key": meta.get("key"),
-                    "task_name": meta.get("task_name"),
-                    "assignee": meta.get("assignee"),
-                    "assignee_email": meta.get("assignee_email"),
-                    "assignee_id": meta.get("assignee_id"),
-                    "content": payload.get("content"), # Provides raw text for the RAG process
-                    "score": round(hit.score, 4)
-                })
-            return suggestions
-
-        except Exception as e:
-            print(f"❌ Similarity search failed: {str(e)}")
-            return []
+            # Mapping raw metadata to a clean structure for the RAG engine
+            standardized_results.append({
+                "key": meta.get("key"),
+                "task_name": meta.get("task_name"),
+                "project": meta.get("project"),
+                "status": meta.get("status"),
+                "priority": meta.get("priority"),
+                "assignee": meta.get("assignee"),
+                "assignee_id": meta.get("assignee_id"),
+                "assignee_email": meta.get("assignee_email"),
+                "content": payload.get("content"), 
+                "score": round(score, 4)
+            })
+            
+        return standardized_results
 
     async def check_already_notified(self, issue_key: str) -> bool:
         """
