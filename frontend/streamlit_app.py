@@ -128,7 +128,7 @@ if prompt := st.chat_input(
                     "message": prompt, 
                     "session_id": st.session_state.session_id
                 }
-                response = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=60)
+                response = requests.post(f"{BACKEND_URL}/api/v1/chat", json=payload, timeout=60)
                 
                 if response.status_code == 200:
                     raw_answer = response.json().get("reply", "I couldn't generate a response.")
