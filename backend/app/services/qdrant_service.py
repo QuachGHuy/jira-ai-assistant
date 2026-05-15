@@ -281,7 +281,7 @@ class QdrantService:
         self, 
         query_text: str, 
         filter_obj: Optional[Dict[str, Any]] = None,
-        limit: int = 10,
+        limit: int = 50,
         score_threshold: float = 0.3
     ) -> List[Dict[str, Any]]:
         """
