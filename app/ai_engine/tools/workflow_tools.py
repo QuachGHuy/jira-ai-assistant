@@ -37,13 +37,13 @@ class WorkflowToolkit:
             
             return f"Found results for '{query}': {str(results)}"
 
-        @tool(args_schema=JQLInput)
+        @tool
         async def automate_assignment() -> str:
             """
             Identify high-priority tickets, recommend assignees via AI, and notify via Slack.
             Can be filtered by a specific JQL.
             """
-            stats = await self.workflow_service.auto_issue_assignment(custom_jql=jql)
+            stats = await self.workflow_service.auto_issue_assignment()
             return f"Process Finished: {stats.get('notified', 0)} devs notified, {stats.get('skipped', 0)} skipped."
         
         @tool
