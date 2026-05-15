@@ -34,8 +34,7 @@ class WorkflowService:
         self.gsheet = gsheet
     
     async def sync_gsheet_report(
-        self, 
-        custom_jql: Optional[str] = None, 
+        self,
         sprint_metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
@@ -55,7 +54,7 @@ class WorkflowService:
         try:
             # 1. Determine JQL and Metadata
             # Default logic targets the currently open sprint
-            jql = custom_jql or "project = 'AIO Development' AND sprint in openSprints()"
+            jql = "project = 'AIO Development' AND sprint in openSprints()"
             
             # Fallback metadata if not provided by the caller (Agent or Scheduler)
             metadata = sprint_metadata or {
@@ -82,7 +81,7 @@ class WorkflowService:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
         
-    async def sync_jira_to_qdrant(self, project_key: str = "AIO Development") -> Dict[str, Any]:
+    async def sync_jira_to_qdrant(self) -> Dict[str, Any]:
         """
         Synchronizes issues from a specific Jira project to the Qdrant vector database.
         This builds the knowledge base for AI similarity searches.
@@ -93,10 +92,10 @@ class WorkflowService:
         Returns:
             Dict[str, Any]: Synchronization report from QdrantService.
         """
-        print(f"📥 Starting Knowledge Base Sync for project: {project_key}")
+        print(f"📥 Starting Knowledge Base Sync")
         
         # 1. Fetch all relevant issues from the project
-        jql = f'project = "{project_key}"'
+        jql = f'project = "AIO Devlopment"'
         issues = await self.jira.get_issues_by_jql(jql)
         
         if not issues:
@@ -109,7 +108,7 @@ class WorkflowService:
 
         return result
     
-    async def auto_issue_assignment(self, custom_jql: Optional[str] = None) -> Dict[str, int]:
+    async def auto_issue_assignment(self) -> Dict[str, int]:
         """
         Identifies issues and dispatches AI-driven assignee recommendations.
         Supports dynamic JQL to allow AI Agents to scan specific projects or filters.
@@ -122,7 +121,7 @@ class WorkflowService:
             Dict[str, int]: Statistics of the workflow run (notified vs skipped).
         """
         # Logic: Use the provided JQL (from an Agent) or fallback to the system default
-        jql_query = custom_jql or 'project = "APG" AND status = "TO DO"'
+        jql_query = 'project = "APG" AND status = "TO DO"'
         
         print(f"🤖 Starting AI Assignment Workflow with JQL: {jql_query}")
         
@@ -145,7 +144,9 @@ class WorkflowService:
             try:
                 # 3. AI Research: Find similar historical context in Qdrant
                 similarity_results = await self.qdrant.search_similar_issues(
-                    query_text=issue.vector_content
+                    query_text=issue.vector_content,
+                    limit=20,
+                    score_threshold=0.62
                 )
 
                 # 4. Intelligence: Perform weighted voting to select the best dev
@@ -175,7 +176,7 @@ class WorkflowService:
 
         return stats
 
-    async def sync_apg_status_from_ad(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
+    async def sync_apg_status_from_ad(self) -> Dict[str, Any]:
         """
         Synchronizes status between development (AD) and management (APG) tickets.
         Accepts dynamic JQL to allow flexibility in sync timeframes or projects.
@@ -188,7 +189,7 @@ class WorkflowService:
             Dict[str, Any]: Telemetry report of the synchronization process.
         """
         # Default JQL focuses on performance by only checking recently updated tickets
-        ad_jql = custom_jql or 'project = "AIO Development" AND status = "Done" AND updated >= -1d'
+        ad_jql = 'project = "AIO Development" AND status = "Done" AND updated >= -1d'
         
         print(f"🔄 Executing Status Sync with JQL: {ad_jql}")
         done_ad_issues = await self.jira.get_issues_by_jql(ad_jql)

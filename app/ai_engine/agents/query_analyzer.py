@@ -26,7 +26,8 @@ class QueryAnalyzer:
             # Metadata Mapping
             - ID: metadata.key (Keyword: "APG-127")
             - Project: metadata.project (Keyword: "Others")
-            - Owner: metadata.owner (Keyword: "email@workforceoptimizer.com")
+            - Assignee: metadata.assignee (Keyword: "Tri Vo Minh")
+            - Assignee email: metadata.assignee_email (Keyword: "email@workforceoptimizer.com")
             - Status: metadata.status (Keyword: "To Do", "Done")
             - Priority: metadata.priority (Keyword: "S1-Critical")
             - Type: metadata.type (Keyword: "Bug", "Task")
@@ -36,16 +37,29 @@ class QueryAnalyzer:
             1. Split Mandate: "input" = Intent/Topic. "filter" = Strict metadata. No semantic terms in filter.
             2. ID Rule: If Ticket ID (e.g., APG-144) is found, put it in BOTH "input" and "metadata.key".
             3. Dates: Convert "since Monday" or "last month" to "range" {{ "gte": "ISO-DATE" }}.
+            4. Logic Gates:
+           - "must": Essential requirements (AND).
+           - "must_not": Exclusions like "not", "except", "excluding" (NOT).
+           - "should": Preferences or "OR" logic like "preferably", "either A or B" (OR).
 
             # Examples
+            User: "Tasks about UI not in Done status"
+            Result: {{"input": "UI issues", "filter": {{"must_not": [{{"key": "metadata.status", "match": {{"value": "Done"}}}}]}}}}
+
+            User: "S1 tasks preferably assigned to huy@workforceoptimizer.com"
+            Result: {{"input": "S1 tasks", "filter": {{"must": [{{"key": "metadata.priority", "match": {{"value": "S1-Critical"}}}}] , "should": [{{"key": "metadata.assignee_email", "match": {{"value": "huy@workforceoptimizer.com"}}}}]}}}}
+
             User: "Find login bugs in project Others"
             Result: {{"input": "login problems", "filter": {{"must": [{{"key": "metadata.project", "match": {{"value": "Others"}}}}, {{"key": "metadata.type", "match": {{"value": "Bug"}}}}]}}}}
+
+            User: "Bugs in project AIO or Others"
+            Result: {{"input": "bugs", "filter": {{"must": [{{"key": "metadata.type", "match": {{"value": "Bug"}}}}] , "should": [{{"key": "metadata.project", "match": {{"value": "AIO"}}}}, {{"key": "metadata.project", "match": {{"value": "Others"}}}}]}}}}
 
             User: "Check APG-127"
             Result: {{"input": "APG-127", "filter": {{"must": [{{"key": "metadata.key", "match": {{"value": "APG-127"}}}}]}}}}
 
             User: "Tasks by Huy since yesterday"
-            Result: {{"input": "assigned tasks", "filter": {{"must": [{{"key": "metadata.owner", "match": {{"value": "huy@workforceoptimizer.com"}}}}, {{"key": "metadata.created_at", "range": {{"gte": "2026-05-13T00:00:00Z"}}}}]}}}}
+            Result: {{"input": "assigned tasks", "filter": {{"must": [{{"key": "metadata.assignee_email", "match": {{"value": "huy@workforceoptimizer.com"}}}}, {{"key": "metadata.created_at", "range": {{"gte": "2026-05-13T00:00:00Z"}}}}]}}}}
         """
         
         return await self.analyzer.ainvoke([

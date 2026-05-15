@@ -126,7 +126,7 @@ class JiraService:
                                           if fields.get("assignee") else "None",
                             status=fields.get("status", {}).get("name", ""),
                             priority=fields.get("priority", {}).get("name", ""),
-                            created_at=fields.get("created"),
+                            created_at=self.processor.format_jira_date(fields.get("created")),
                             outward_issue_key=outward_key,
                             inward_issue_key=inward_key
                         )

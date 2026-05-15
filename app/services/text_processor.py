@@ -1,5 +1,6 @@
 import re
 import uuid
+from datetime import datetime
 
 class TextProcessor:
     """
@@ -111,3 +112,15 @@ class TextProcessor:
         """
         # Using NAMESPACE_DNS as a seed for consistent UUID generation across restarts
         return str(uuid.uuid5(uuid.NAMESPACE_DNS, text))
+
+    @staticmethod
+    def format_jira_date(date_str: str) -> str:
+        """
+        Converts Jira date (+0800) to RFC 3339 (+08:00) for Qdrant compatibility.
+        """
+        if not date_str or date_str == "None":
+            return None
+        # Fix timezone: +0800 -> +08:00
+        if len(date_str) > 5 and date_str[-5] in ['+', '-'] and ":" not in date_str[-3:]:
+            date_str = date_str[:-2] + ":" + date_str[-2:]
+        return date_str

@@ -38,7 +38,7 @@ class WorkflowToolkit:
             return f"Found results for '{query}': {str(results)}"
 
         @tool(args_schema=JQLInput)
-        async def automate_assignment(jql: Optional[str] = None) -> str:
+        async def automate_assignment() -> str:
             """
             Identify high-priority tickets, recommend assignees via AI, and notify via Slack.
             Can be filtered by a specific JQL.
@@ -52,8 +52,8 @@ class WorkflowToolkit:
             result = await self.workflow_service.sync_gsheet_report()
             return f"Dashboard Sync: {result.get('status', 'success')} (Count: {result.get('synced_count', 0)})"
         
-        @tool(args_schema=ProjectInput)
-        async def sync_knowledge_base(project_key: str = "AIO Development") -> str:
+        @tool
+        async def sync_knowledge_base() -> str:
             """Syncs Jira issues to Qdrant. Use this to 'train' or 'update' the AI memory."""
             result = await self.workflow_service.sync_jira_to_qdrant(project_key=project_key)
             return f"KB Sync: {result.get('status', 'success')} for project {project_key}."
