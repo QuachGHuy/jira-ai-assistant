@@ -1,19 +1,32 @@
 services:
-  app:
-    build: .
-    container_name: app
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+    env_file: .env
     volumes:
-      - .:/app
+      - ./backend:/app
+      - /app/.venv
     networks:
       - app-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8501:8501"
     depends_on:
-      - ollama
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/.venv   
+    networks:
+      - app-network
 
   ollama:
     image: ollama/ollama:latest
@@ -31,16 +44,14 @@ services:
             - driver: nvidia
               count: 1 
               capabilities: [gpu]
-    
-
   tunnel:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
-    command: tunnel --url http://app:8000
+    command: tunnel --url http://backend:8000
     networks:
       - app-network
     depends_on:
-      - app
+      - backend
 
   9router:
     image: 9router/9router:latest
@@ -49,8 +60,6 @@ services:
       - "20128:20128"
     environment:
       - ROUTER_PORT=20128
-    volumes:
-      - ./9router_config.json:/app/9router.config.json
     networks:
       - app-network
 

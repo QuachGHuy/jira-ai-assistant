@@ -95,11 +95,11 @@ class WorkflowService:
         print(f"📥 Starting Knowledge Base Sync")
         
         # 1. Fetch all relevant issues from the project
-        jql = f'project = "AIO Devlopment"'
+        jql = f'project = "AIO Development"'
         issues = await self.jira.get_issues_by_jql(jql)
         
         if not issues:
-            return {"status": "warning", "message": f"No issues found for project {project_key}"}
+            return {"status": "warning", "message": f"No issues found"}
 
         # 2. Vectorize and Upsert to Qdrant
         result = await self.qdrant.upsert_batch_to_qdrant(issues)

@@ -49,9 +49,10 @@ class JiraAgent:
             - If this is the FIRST message: Greet user warmly and list available tools
 
             # TOOL USAGE POLICY
-            - SEARCH FIRST: Always search in Knowledge Base.
+            - SEARCH: Always search in Knowledge Base.
             - EXPLICIT ONLY: Use tools ONLY when the user asks for data.
-            - ERROR REPORTING: Never hallucinate ticket IDs.
+            - SYNC: Never auto sync Knowledge Base
+            - ERROR REPORTING: Never hallucinate ticket ID.
 
             # RESPONSE GUIDELINES
             - STRICT OBEDIENCE: Execute exactly what is asked. 
