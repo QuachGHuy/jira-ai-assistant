@@ -1,5 +1,6 @@
 import json
 import traceback
+import asyncio
 from typing import Dict, Any, Optional, List
 
 from app.services.jira_service import JiraService
