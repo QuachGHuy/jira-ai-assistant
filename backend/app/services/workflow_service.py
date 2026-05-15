@@ -250,7 +250,7 @@ class WorkflowService:
         try:
             # Data Extraction from Slack payload
             action_data = payload["actions"][0]
-            parts = action_data["value"].split("|")
+            parts = [p.strip() for p in action_data["value"].split("|")]
             
             action_type, apg_key, assignee_email, assignee_id, ticket_link = parts
             user_mention = f"<@{payload['user']['id']}>"
@@ -261,27 +261,25 @@ class WorkflowService:
                 await self.jira.update_issue_status(apg_key, "READY FOR DEV")
 
                 # Step B: Link AD Development Ticket
-                ad_jql = f'project = "AIO Development" AND linkedIssue = "{apg_key}"'
-
                 # --- Polling Logic: Wait for Jira Automation to clone APG to AD ticket ---
                 # Automation in Jira is asynchronous and may take a few seconds to create the linked AD task.
-                # We poll every 2 seconds (up to 5 times) to handle this race condition.
-                ad_issues = []
-                max_retries = 5
-
+                # We poll every 5 seconds (up to 3 times) to handle this race condition.
+                
+                ad_issues = None
+                max_retries = 3
+                
                 for attempt in range(max_retries):
                     print(f"🔍 [Attempt {attempt + 1}] Searching for AD task linked to {apg_key}...")
-                    
-                    ad_jql = f'project = "AIO Development" AND linkedIssue = "{apg_key}"'
+                    # Wait 10s before the next check, totaling up to 10s if needed
+                    await asyncio.sleep(10)
+
+                    ad_jql = f'project = "AIO Development" AND issueLink="{apg_key}" ORDER BY created DESC'
                     ad_issues = await self.jira.get_issues_by_jql(ad_jql)
                     
                     if ad_issues:
                         print(f"✅ Linked AD task found: {ad_issues[0].metadata.key}")
                         break
                     
-                    # Wait 2s before the next check, totaling up to 10s if needed
-                    await asyncio.sleep(2)
-
                 if ad_issues:
                     ad_key = ad_issues[0].metadata.key
                     # Step C: Assign Developer to AD Ticket
