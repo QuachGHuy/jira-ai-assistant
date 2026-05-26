@@ -81,7 +81,7 @@ with col1:
 
 with col2:
     if st.button("🧠 Sync KB"):
-        send_sync_request("/api/v1/sync/knowledge-base", "Knowledge Base")
+        send_sync_request("/api/v1/workflow/sync-knowledge-base", "Knowledge Base")
 
 with col3:
     if st.button("🔄 Sync Status"):
