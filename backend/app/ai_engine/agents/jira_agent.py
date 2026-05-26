@@ -14,9 +14,9 @@ class JiraAgent:
     def __init__(self, workflow_service: WorkflowService):
 
         self.llm = ChatOpenAI(
-            model=settings.ROUTER_CHAT_MODEL,
-            base_url=settings.ROUTER_BASE_URL,
-            api_key=settings.ROUTER_API_KEY,
+            model=settings.LLM_CHAT_MODEL,
+            base_url=settings.LLM_BASE_URL,
+            api_key=settings.LLM_API_KEY,
             temperature=0,
         )
 
