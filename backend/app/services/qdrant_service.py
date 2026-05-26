@@ -28,7 +28,7 @@ class QdrantService:
         # Primary asynchronous client for high-concurrency requests
         self.client: AsyncQdrantClient = AsyncQdrantClient(
             url=settings.QDRANT_ENDPOINT_URL,
-            api_key=settings.QDRANT_API_TOKEN,
+            api_key=settings.QDRANT_API_TOKEN.get_secret_value(),
             check_compatibility=False
         )
         
@@ -72,7 +72,7 @@ class QdrantService:
         """
         sync_client = QdrantClient(
             url=settings.QDRANT_ENDPOINT_URL, 
-            api_key=settings.QDRANT_API_TOKEN,
+            api_key=settings.QDRANT_API_TOKEN.get_secret_value(),
             check_compatibility=False
         )
         
