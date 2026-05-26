@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -8,27 +9,27 @@ class Settings(BaseSettings):
     # Jira
     JIRA_DOMAIN_URL: str = ""
     JIRA_EMAIL: str = ""
-    JIRA_API_TOKEN: str = ""
+    JIRA_API_TOKEN: SecretStr = SecretStr("")
 
     # Qdrant
     QDRANT_ENDPOINT_URL: str = ""
-    QDRANT_API_TOKEN: str = ""
+    QDRANT_API_TOKEN: SecretStr = SecretStr("")
     QDRANT_COLLECTION_JIRA: str = "jira_issues"
     QDRANT_COLLECTION_NOTIFIED: str = "issue_notified_check"
     QDRANT_VECTOR_SIZE: int = 1024 
 
-    # 9Router
-    ROUTER_BASE_URL: str = "http://localhost:20128/v1"
-    ROUTER_CHAT_MODEL: str = "chat-model"
-    ROUTER_API_KEY: str = ""
+    # LLMs 
+    LLM_BASE_URL: str = "http://localhost:20128/v1"
+    LLM_CHAT_MODEL: str = "chat-model"
+    LLM_API_KEY: SecretStr = SecretStr("")
 
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_EMBEDDING_MODEL: str = "bge-m3:567m"
 
     # Slack
-    SLACK_BOT_TOKEN: str = ""
-    SLACK_SIGNING_SECRET: str = ""
+    SLACK_BOT_TOKEN: SecretStr = SecretStr("")
+    SLACK_SIGNING_SECRET: SecretStr = SecretStr("")
     SLACK_CHANNEL_ID: str = ""
 
     # Google Sheets
