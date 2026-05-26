@@ -15,7 +15,7 @@ class SlackService:
         Initializes the Slack WebClient using the bot token and default channel ID 
         defined in the application settings.
         """
-        self.client = WebClient(token=settings.SLACK_BOT_TOKEN)
+        self.client = WebClient(token=settings.SLACK_BOT_TOKEN.get_secret_value())
         self.channel_id = settings.SLACK_CHANNEL_ID
 
     def _build_slack_blocks(self, ticket: Dict[str, Any]) -> List[Dict[str, Any]]:

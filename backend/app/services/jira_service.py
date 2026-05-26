@@ -22,7 +22,7 @@ class JiraService:
             self.jira = Jira(
                 url=settings.JIRA_DOMAIN_URL,
                 username=settings.JIRA_EMAIL,
-                password=settings.JIRA_API_TOKEN,
+                password=settings.JIRA_API_TOKEN.get_secret_value(),
                 cloud=True
             )
             self.processor = TextProcessor()
