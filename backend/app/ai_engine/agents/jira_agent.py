@@ -2,7 +2,8 @@ from datetime import datetime
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.core.config import settings
@@ -12,7 +13,9 @@ from app.services.workflow_service import WorkflowService
 
 class JiraAgent:
     def __init__(self, workflow_service: WorkflowService):
-
+        """
+        Initializes the agent with an LLM instance, the workflow toolkit, and memory checkpointers.
+        """
         self.llm = ChatOpenAI(
             model=settings.LLM_CHAT_MODEL,
             base_url=settings.LLM_BASE_URL,
@@ -29,11 +32,12 @@ class JiraAgent:
 
         # Memory checkpoint
         self.memory = MemorySaver()
-
         self.agent = self._create_agent()
 
     def _create_agent(self):
-
+        """
+        Constructs the system prompt and initializes Agent executor.
+        """
         now = datetime.now().strftime("%A, %B %d, %Y")
 
         system_prompt = f"""
@@ -61,10 +65,10 @@ class JiraAgent:
             - LANGUAGE: Vietnamese if input is Vietnamese.
             """
 
-        return create_react_agent(
+        return create_agent(
             model=self.llm,
             tools=self.tools,
-            prompt=system_prompt,
+            system_prompt=system_prompt,
             checkpointer=self.memory,
         )
 
@@ -73,12 +77,22 @@ class JiraAgent:
         user_input: str,
         thread_id: str = "default_session"
     ):
+        """
+        Executes a single conversational turn with the agent.
+        
+        Args:
+            user_input (str): Raw input prompt from the user.
+            thread_id (str): Unique identifier to track conversational states.
+            
+        Returns:
+            str: Agent's response string extracted from the final message chunk.
+        """
 
-        config = {
-            "configurable": {
+        config = RunnableConfig(
+            configurable={
                 "thread_id": thread_id
             }
-        }
+        )
 
         result = await self.agent.ainvoke(
             {
