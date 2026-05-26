@@ -72,7 +72,7 @@ class WorkflowService:
 
             # 3. Perform the In-place Upsert on Google Sheets
             
-            await self.gsheet.sync_dashboard_upsert(metadata, issues)
+            await self.gsheet.sync_dashboard_upsert(issues, metadata)
             
             print(f"✅ GSheet Sync Complete: {len(issues)} issues processed.")
             return {"status": "success", "synced_count": len(issues)}
