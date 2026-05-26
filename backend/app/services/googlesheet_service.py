@@ -1,6 +1,7 @@
 import gspread
 import traceback
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from google.oauth2.service_account import Credentials
 from gspread.utils import ValueInputOption
@@ -10,20 +11,15 @@ from app.core.config import settings
 class GoogleSheetService:
     """
     Service responsible for maintaining a real-time Project Dashboard on Google Sheets.
-    Implements an 'In-place Upsert' strategy to update existing data while preserving 
-    spreadsheet formulas and layout structure.
+    Preserves built-in cell formulas while automating Sprint metadata generation.
     """
 
     def __init__(self) -> None:
-        """
-        Initializes the Google Sheets client using Service Account credentials.
-        Sets up the authorized client and targets the specific spreadsheet defined in settings.
-        """
+        """Initializes the Google Sheets client using Service Account credentials."""
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        # Authentication via service_account.json file
         self.creds = Credentials.from_service_account_file(
             "service_account.json", 
             scopes=scopes
@@ -33,22 +29,43 @@ class GoogleSheetService:
         self.sheet_name = settings.GOOGLE_SHEET_NAME
 
     def _get_worksheet(self, name: str) -> gspread.Worksheet:
-        """
-        Opens the spreadsheet by ID and returns the requested worksheet.
-        
-        Args:
-            name (str): The name of the specific tab/worksheet.
-
-        Returns:
-            gspread.Worksheet: The gspread worksheet object.
-        """
+        """Opens the spreadsheet by ID and returns the requested worksheet."""
         spreadsheet = self.client.open_by_key(self.sheet_id)
         return spreadsheet.worksheet(name)
 
+    def _calculate_current_sprint(self) -> Dict[str, str]:
+        """
+        Automatically calculates the current active Sprint context based on a 2-week cycle.
+        Uses a bi-weekly cadence anchored to a known historical Thursday start date (Jan 8, 2026).
+        
+        Returns:
+            Dict[str, str]: Derived metadata containing sprint name, start, and end dates.
+        """
+        # Historical Anchor Date: Thursday, Jan 8, 2026 to align with bi-weekly Thursday-start sprints.
+        anchor_date = datetime(2026, 1, 8, tzinfo=timezone.utc) 
+        now = datetime.now(timezone.utc)
+        
+        days_elapsed = (now - anchor_date).days
+        sprint_duration = 14 # 2 weeks fixed duration
+        
+        sprints_passed = days_elapsed // sprint_duration
+        
+        sprint_start = anchor_date + timedelta(days=sprints_passed * sprint_duration)
+        sprint_end = sprint_start + timedelta(days=sprint_duration - 1)
+        
+        sprint_number = (sprint_start.timetuple().tm_yday // 14) + 1
+        sprint_name = f"Sprint {sprint_start.year} - W{sprint_number}"
+        
+        return {
+            "name": sprint_name,
+            "start_date": sprint_start.strftime("%Y-%m-%d"),
+            "end_date": sprint_end.strftime("%Y-%m-%d")
+        }
+
     def _normalize_issue(self, issue: Any) -> Dict[str, Any]:
         """
-        Standardizes input from different sources (Jira API, Qdrant, or Pydantic models).
-        Extracts nested metadata to provide a flattened dictionary with consistent keys.
+        Standardizes inputs from Jira SDK objects, Qdrant vectors, or Pydantic dicts
+        into a clean, flattened dictionary structure.
 
         Args:
             issue (Any): The raw issue data (object or dict).
@@ -56,41 +73,37 @@ class GoogleSheetService:
         Returns:
             Dict[str, Any]: A normalized dictionary containing core ticket fields.
         """
-        # Convert Pydantic models to dict if necessary
-        if hasattr(issue, 'model_dump'):
-            raw_data = issue.model_dump()
-        elif isinstance(issue, dict):
-            raw_data = issue
-        else:
-            raw_data = dict(issue)
+        # --- PATH A: Jira SDK Issue Object (Using safe attribute reflection) ---
+        if hasattr(issue, "fields") and hasattr(issue, "key"):
+            f = issue.fields
+            return {
+                "key": str(getattr(issue, "key", "N/A")),
+                "taskName": str(getattr(f, "summary", "N/A")),
+                "project": str(getattr(getattr(f, "project", None), "name", "N/A")),
+                "type": str(getattr(getattr(f, "issuetype", None), "name", "N/A")),
+                "assignee": str(getattr(getattr(f, "assignee", None), "displayName", "Unassigned")),
+                "status": str(getattr(getattr(f, "status", None), "name", "N/A")),
+                "priority": str(getattr(getattr(f, "priority", None), "name", "N/A"))
+            }
 
-        # Qdrant results wrap data in 'metadata'; Jira results might be flat
-        data = raw_data.get("metadata", raw_data)
-        
+        # --- PATH B: JSON Dictionary / Pydantic / Qdrant Records ---
+        data = issue.model_dump() if hasattr(issue, "model_dump") else issue if isinstance(issue, dict) else {}
+        meta = data.get("metadata", data) if isinstance(data, dict) else {}
+
         return {
-            "key": data.get("key") or data.get("Key") or data.get("issue_key"),
-            "taskName": data.get("taskName") or data.get("task_name") or data.get("summary", "N/A"),
-            "project": data.get("project", "N/A"),
-            "type": data.get("type") or data.get("issue_type") or data.get("issuetype", "N/A"),
-            "assignee": data.get("assignee") or data.get("owner") or "Unassigned",
-            "status": data.get("status", "N/A"),
-            "priority": data.get("priority", "N/A")
+            "key": str(meta.get("key") or meta.get("issue_key") or "N/A"),
+            "taskName": str(meta.get("taskName") or meta.get("task_name") or meta.get("summary") or "N/A"),
+            "project": str(meta.get("project") or "N/A"),
+            "type": str(meta.get("type") or meta.get("issue_type") or "N/A"),
+            "assignee": str(meta.get("assignee") or meta.get("owner") or "Unassigned"),
+            "status": str(meta.get("status") or "N/A"),
+            "priority": str(meta.get("priority") or "N/A")
         }
 
     def _format_full_row(self, normalized_issue: Dict[str, Any]) -> List[Any]:
-        """
-        Prepares a list of values matching the column structure of the Dashboard (Col A to H).
-        
-        Args:
-            normalized_issue (Dict[str, Any]): The standardized issue dictionary.
-
-        Returns:
-            List[Any]: A list of values formatted as a spreadsheet row.
-        """
+        """Prepares a raw list matching Column A-H schema for table entry."""
         key = normalized_issue["key"]
         jira_url = f"{settings.JIRA_DOMAIN_URL}/browse/{key}"
-        
-        # Generates a clickable Jira link in Column A using spreadsheet formulas
         hyperlink_formula = f'=HYPERLINK("{jira_url}", "{key}")'
         
         return [
@@ -104,46 +117,14 @@ class GoogleSheetService:
             normalized_issue["priority"]      # Col H: Priority
         ]
 
-    def _calculate_status_counts(self, normalized_issues: List[Dict[str, Any]]) -> Dict[str, int]:
+    async def sync_dashboard_upsert(self, issues: List[Any], sprint_metadata: Optional[dict] = None):
         """
-        Calculates frequencies of tasks per status for the summary section.
-        
-        Args:
-            normalized_issues (List[Dict[str, Any]]): Standardized issue list.
-
-        Returns:
-            Dict[str, int]: A mapping of status keys to their occurrence counts.
-        """
-        # Predefined buckets matching the Dashboard Summary layout
-        stats = {
-            k: 0 for k in [
-                "To Do", "In Progress", "Ready for testing", 
-                "Testing", "Stuck / Blocker", "Done", "Closed"
-            ]
-        }
-        for issue in normalized_issues:
-            status = issue.get("status")
-            if not status: 
-                continue
-            
-            # Robust partial matching (e.g., 'Testing' matches 'In Testing')
-            for s_key in stats.keys():
-                if s_key.lower() in status.lower():
-                    stats[s_key] += 1
-        return stats
-
-    async def sync_dashboard_upsert(self, sprint_metadata: dict, issues: List[Any]):
-        """
-        Executes the full synchronization pipeline:
-        1. Normalizes all input data.
-        2. Updates high-level Summary Metrics (Rows 2-6).
-        3. Identifies existing tickets vs. empty slots in the data table (Row 9+).
-        4. Performs batch updates to minimize API overhead.
-        5. Deletes rows for tickets that are no longer part of the active sync.
+        Executes the synchronization pipeline.
+        Protects spreadsheet formulas (E3, F3, etc.) by omitting static metric overwrites.
 
         Args:
-            sprint_metadata (dict): Context info (Sprint Name, Start/End dates).
-            issues (List[Any]): List of issues retrieved from Jira/Qdrant.
+            issues (List[Any]): List of active sprint issues from Jira.
+            sprint_metadata (Optional[dict]): Deprecated manual overrides, defaults to auto-calculation.
         """
         try:
             worksheet = self._get_worksheet(self.sheet_name)
@@ -159,32 +140,27 @@ class GoogleSheetService:
                 print("⚠️ Sync aborted: No valid issues found.")
                 return
 
-            # --- PHASE 2: Update Summary Metrics (Header Section) ---
-            stats = self._calculate_status_counts(normalized_issues)
+            # --- PHASE 2: Automatic Metadata Resolution ---
+            # Always dynamically calculate active sprint metadata based on the current datetime
+            sprint_metadata = self._calculate_current_sprint()
+
+            print(f"📋 Syncing Target: {sprint_metadata['name']} ({sprint_metadata['start_date']} -> {sprint_metadata['end_date']})")
+
+            # Update ONLY static label cells to preserve pre-existing COUNTIF formulas in the summary area
             summary_batch = [
                 {'range': 'C2', 'values': [[sprint_metadata.get('name', 'N/A')]]},
-                {'range': 'C3', 'values': [[len(normalized_issues)]]},
                 {'range': 'C5', 'values': [[sprint_metadata.get('start_date', 'N/A')]]},
                 {'range': 'C6', 'values': [[sprint_metadata.get('end_date', 'N/A')]]},
-                {'range': 'E3', 'values': [[stats["To Do"]]]},
-                {'range': 'F3', 'values': [[stats["In Progress"]]]},
-                {'range': 'G3', 'values': [[stats["Ready for testing"]]]},
-                {'range': 'H3', 'values': [[stats["Testing"]]]},
-                {'range': 'F6', 'values': [[stats["Stuck / Blocker"]]]},
-                {'range': 'G6', 'values': [[stats["Done"]]]},
-                {'range': 'H6', 'values': [[stats["Closed"]]]},
             ]
             worksheet.batch_update(summary_batch)
 
             # --- PHASE 3: Map Current Spreadsheet State (Row 9+) ---
-            # Fetch Column B to check which tickets already exist in the sheet
             max_search_row = 500 
             col_b_values = worksheet.col_values(2) 
             
             existing_keys_on_sheet = {} 
             empty_slots = []            
             
-            # Row 9 is index 8 in the values list
             for i in range(8, max_search_row):
                 row_idx = i + 1
                 val = col_b_values[i] if i < len(col_b_values) else ""
@@ -204,21 +180,18 @@ class GoogleSheetService:
                 full_row_data = self._format_full_row(data)
                 
                 if k in existing_keys_on_sheet:
-                    # Update existing row
                     row_idx = existing_keys_on_sheet[k]
                     update_batch.append({
                         'range': f'A{row_idx}:H{row_idx}',
                         'values': [full_row_data]
                     })
                 elif empty_slots:
-                    # Fill first available empty slot
                     target_row = empty_slots.pop(0)
                     update_batch.append({
                         'range': f'A{target_row}:H{target_row}',
                         'values': [full_row_data]
                     })
 
-            # Commit updates using 'user_entered' to ensure formulas are parsed correctly
             if update_batch:
                 worksheet.batch_update(
                     update_batch, 
@@ -226,19 +199,17 @@ class GoogleSheetService:
                 )
 
             # --- PHASE 5: Cleanup Stale Data ---
-            # Remove rows for tickets that are no longer in the source Jira project
             rows_to_delete = [
                 idx for k, idx in existing_keys_on_sheet.items() 
                 if k not in new_issues_map
             ]
             
             if rows_to_delete:
-                # Iterate in reverse to keep row indices valid during deletion
                 for row_num in sorted(rows_to_delete, reverse=True):
                     worksheet.delete_rows(row_num)
-                print(f"🗑️ Cleaned up {len(rows_to_delete)} stale tickets.")
+                print(f"🗑️ Cleaned up {len(rows_to_delete)} stale tickets from tracking range.")
 
-            print(f"✅ Dashboard Sync Complete: {len(normalized_issues)} tickets processed.")
+            print(f"✅ Dashboard Sync Complete. Formulas retained. {len(normalized_issues)} entries mapped.")
 
         except Exception as e:
             print(f"❌ GoogleSheetService Error: {str(e)}")
