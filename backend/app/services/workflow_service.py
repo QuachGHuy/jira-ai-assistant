@@ -82,21 +82,22 @@ class WorkflowService:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
         
-    async def sync_jira_to_qdrant(self) -> Dict[str, Any]:
+    async def sync_jira_to_qdrant(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
         """
         Synchronizes issues from a specific Jira project to the Qdrant vector database.
         This builds the knowledge base for AI similarity searches.
         
         Args:
-            project_key (str): The Jira project key to sync.
-            
+            custom_jql (Optional[str]): Custom filter for issues. 
+            Defaults to the default JQL if None.
+
         Returns:
             Dict[str, Any]: Synchronization report from QdrantService.
         """
         print(f"📥 Starting Knowledge Base Sync")
         
         # 1. Fetch all relevant issues from the project
-        jql = f'project = "AIO Development"'
+        jql = custom_jql if custom_jql else 'project = "AIO Development"'
         issues = await self.jira.get_issues_by_jql(jql)
         
         if not issues:
@@ -109,20 +110,20 @@ class WorkflowService:
 
         return result
     
-    async def auto_issue_assignment(self) -> Dict[str, int]:
+    async def auto_issue_assignment(self, custom_jql: Optional[str] = None) -> Dict[str, int]:
         """
         Identifies issues and dispatches AI-driven assignee recommendations.
         Supports dynamic JQL to allow AI Agents to scan specific projects or filters.
         
         Args:
             custom_jql (Optional[str]): A specific JQL query. 
-                Defaults to 'project = "APG" AND status = "TO DO"' if None.
+            Defaults to 'project = "APG" AND status = "TO DO"' if None.
 
         Returns:
             Dict[str, int]: Statistics of the workflow run (notified vs skipped).
         """
         # Logic: Use the provided JQL (from an Agent) or fallback to the system default
-        jql_query = 'project = "APG" AND status = "TO DO"'
+        jql_query = custom_jql if custom_jql else 'project = "APG" AND status = "TO DO"'
         
         print(f"🤖 Starting AI Assignment Workflow with JQL: {jql_query}")
         
@@ -177,20 +178,20 @@ class WorkflowService:
 
         return stats
 
-    async def sync_apg_status_from_ad(self) -> Dict[str, Any]:
+    async def sync_apg_status_from_ad(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
         """
         Synchronizes status between development (AD) and management (APG) tickets.
         Accepts dynamic JQL to allow flexibility in sync timeframes or projects.
 
         Args:
             custom_jql (Optional[str]): Query to find 'Done' development tickets.
-                Defaults to recently updated AD tickets in 'Done' status.
+            Defaults to recently updated AD tickets in 'Done' status.
 
         Returns:
             Dict[str, Any]: Telemetry report of the synchronization process.
         """
         # Default JQL focuses on performance by only checking recently updated tickets
-        ad_jql = 'project = "AIO Development" AND status = "Done" AND updated >= -1d'
+        ad_jql = custom_jql if custom_jql else 'project = "AIO Development" AND status = "Done"'
         
         print(f"🔄 Executing Status Sync with JQL: {ad_jql}")
         done_ad_issues = await self.jira.get_issues_by_jql(ad_jql)
