@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     # APP
     EXTERNAL_BASE_URL: str = "http://localhost:8000"
     SLACK_INTERACTIVE_ENDPOINT: str = "/api/v1/slack/interactive"
+    TIMEZONE: str = "Asia/Ho_Chi_Minh"
 
     # Jira
     JIRA_DOMAIN_URL: str = ""
