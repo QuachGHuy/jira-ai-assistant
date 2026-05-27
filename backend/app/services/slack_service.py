@@ -156,3 +156,20 @@ class SlackService:
         except Exception as e:
             print(f"❌ Slack Update Error: {str(e)}")
             traceback.print_exc()
+
+    async def send_message(self, channel: str, text: str):
+        """
+        Sends a simple text message to a specified Slack channel.
+        
+        Args:
+            channel (str): The Slack channel ID to send the message to.
+            text (str): The content of the message to be sent.
+        """
+        try:
+            self.client.chat_postMessage(
+                channel=channel,
+                text=text
+            )
+        except Exception as e:
+            print(f"❌ Slack Message Send Error: {str(e)}")
+            traceback.print_exc()
