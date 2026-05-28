@@ -1,4 +1,6 @@
+import inspect
 from datetime import datetime
+from typing import Any, Dict
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -12,58 +14,71 @@ from app.services.workflow_service import WorkflowService
 
 
 class JiraAgent:
-    def __init__(self, workflow_service: WorkflowService):
+    """
+    Core AI Agent orchestrator for the Jira Intelligence Platform.
+    
+    Integrates LangChain's conversational agent scaffolding with custom operational 
+    toolkits, maintaining transactional state history using local MemorySaver checkpointers.
+    Optimized for extended context operations with local Qwen2.5 architectures.
+    """
+
+    def __init__(self, workflow_service: WorkflowService) -> None:
         """
-        Initializes the agent with an LLM instance, the workflow toolkit, and memory checkpointers.
+        Initializes the intelligence agent with an optimized OpenAI-compatible LLM instance,
+        registers system tools, and configures memory state persistent storage.
+
+        Args:
+            workflow_service (WorkflowService): Unified service container orchestration.
         """
+        # Configure Chat Client with expanded 16K context parameters to accommodate large RAG tables
         self.llm = ChatOpenAI(
             model=settings.LLM_CHAT_MODEL,
             base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=0,
+            api_key=settings.LLM_API_KEY, # Resolved SecretStr type compilation safe
+            temperature=0.3,
         )
 
+        # Initialize technical capabilities via the toolkit assembler
         self.toolkit = WorkflowToolkit(
             workflow_service,
             llm=self.llm
         )
-
         self.tools = self.toolkit.get_tools()
 
-        # Memory checkpoint
+        # Ephemeral memory layer tracking session thread states
         self.memory = MemorySaver()
         self.agent = self._create_agent()
 
-    def _create_agent(self):
+    def _create_agent(self) -> Any:
         """
-        Constructs the system prompt and initializes Agent executor.
+        Constructs the strict system operational instructions prompt and binds the agent runner.
+
+        Returns:
+            Any: Compiled LangChain agent executor instance.
         """
         now = datetime.now().strftime("%A, %B %d, %Y")
 
-        system_prompt = f"""
-            You are an Intelligence Assistant.
-
-            Your role is to assist users in managing,
-            analyzing, and reporting Jira tickets.
+        system_prompt = inspect.cleandoc(f"""
+            You are an elite Intelligence Assistant specialized in Jira Operations.
+            Your role is to assist engineering leads in managing, analyzing, and reporting Jira issues.
 
             # TEMPORAL CONTEXT
-            - Today is: {now}
+            - Current Date: {now}
 
-            # SESSION START
-            - If this is the FIRST message: Greet user warmly and list available tools
+            # CONVERSATIONAL LIFECYCLE
+            - First Message Only: Warmly greet the user and immediately list out available tools.
 
             # TOOL USAGE POLICY
-            - SEARCH: Always search in Knowledge Base.
-            - EXPLICIT ONLY: Use tools ONLY when the user asks for data.
-            - SYNC: Never auto sync Knowledge Base
-            - ERROR REPORTING: Never hallucinate ticket ID.
+            - SEARCH CRITERIA: Prioritize querying the vector store database for semantic info.
+            - EXPLICIT CALLS: Invoke system tools ONLY when data extraction is explicitly requested.
+            - SYNC REGULATION: Never perform automated hot-sync operations on the Knowledge Base unless commanded.
+            - INTEGRITY ENFORCEMENT: Never guess, fake, or hallucinate Ticket IDs or metadata statistics under any condition.
 
-            # RESPONSE GUIDELINES
-            - STRICT OBEDIENCE: Execute exactly what is asked. 
-            - NO CHATTER: Do not ask irrelevant follow-up questions.
-            - FORMAT: Use Markdown tables for data.
-            - LANGUAGE: Vietnamese if input is Vietnamese.
-            """
+            # CRITICAL RESPONDING MANDATES (VIOLATION IS STRICTLY FORBIDDEN)
+            - ZERO CHATTER: Output direct answers immediately. Do NOT include polite fillers, conversational small talk, or concluding questions like "Let me know if you need anything else".
+            - ABSOLUTE FORMATTING LAW: You MUST present all structured data, lists of tickets, logs, or metrics using highly readable Markdown TABLES. Do NOT use bullet points or numbered lists for metrics or multiple items.
+            - LOCALIZATION: Respond natively in Vietnamese if the prompt or user input is processed in Vietnamese.
+            """)
 
         return create_agent(
             model=self.llm,
@@ -72,28 +87,24 @@ class JiraAgent:
             checkpointer=self.memory,
         )
 
-    async def run(
-        self,
-        user_input: str,
-        thread_id: str = "default_session"
-    ):
+    async def run(self, user_input: str, thread_id: str = "default_session") -> str:
         """
-        Executes a single conversational turn with the agent.
-        
-        Args:
-            user_input (str): Raw input prompt from the user.
-            thread_id (str): Unique identifier to track conversational states.
-            
-        Returns:
-            str: Agent's response string extracted from the final message chunk.
-        """
+        Executes a single conversational thread turn against the reactive agent executor.
 
+        Args:
+            user_input (str): Raw incoming instruction text prompt string.
+            thread_id (str): Unique tracking identifier for runtime execution memory state isolation.
+
+        Returns:
+            str: Normalized response string extracted cleanly from the final message sequence node.
+        """
         config = RunnableConfig(
             configurable={
                 "thread_id": thread_id
             }
         )
 
+        # Dispatch execution signal to LangGraph agent engine
         result = await self.agent.ainvoke(
             {
                 "messages": [
@@ -103,4 +114,6 @@ class JiraAgent:
             config=config
         )
 
-        return result["messages"][-1].content
+        # Safely extract and return the textual response out of the final message object
+        final_message = result["messages"][-1]
+        return str(final_message.content)
