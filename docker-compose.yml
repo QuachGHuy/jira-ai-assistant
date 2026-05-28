@@ -37,6 +37,7 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - app-network
+    privileged: true
     deploy:
       resources:
         reservations:

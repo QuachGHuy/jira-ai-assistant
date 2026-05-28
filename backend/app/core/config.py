@@ -17,15 +17,16 @@ class Settings(BaseSettings):
     QDRANT_API_TOKEN: SecretStr = SecretStr("")
     QDRANT_COLLECTION_JIRA: str = "jira_issues"
     QDRANT_COLLECTION_NOTIFIED: str = "issue_notified_check"
+    QDRANT_COLLECTION_JOBS: str = "cron_jobs"
     QDRANT_VECTOR_SIZE: int = 1024 
 
     # LLMs 
-    LLM_BASE_URL: str = "http://localhost:20128/v1"
+    LLM_BASE_URL: str = "http://9router:20128/v1"
     LLM_CHAT_MODEL: str = "chat-model"
     LLM_API_KEY: SecretStr = SecretStr("")
 
     # Ollama
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_BASE_URL: str = "http://ollama:11434/api/embeddings"
     OLLAMA_EMBEDDING_MODEL: str = "bge-m3:567m"
 
     # Slack
