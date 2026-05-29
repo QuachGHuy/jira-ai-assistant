@@ -1,5 +1,4 @@
 import json
-import traceback
 import asyncio
 from typing import Dict, Any, Optional, List
 
@@ -10,11 +9,11 @@ from app.services.qdrant_service import QdrantService
 from app.services.voting_service import VotingService
 from app.core.config import settings
 
+
 class WorkflowService:
     """
     The Central Orchestrator for Jira-AI operations.
-    Now enhanced with Dynamic JQL support to act as a foundation for 
-    LangChain Tools and automated workers.
+    Enforces a strict standardized output contract across all runtime operational matrices.
     """
 
     def __init__(
@@ -25,136 +24,71 @@ class WorkflowService:
         gsheet: GoogleSheetService,
         voting: VotingService
     ):
-        """
-        Initializes the service with core integration components.
-        """
         self.jira = jira
         self.slack = slack
         self.qdrant = qdrant
         self.voting = voting
         self.gsheet = gsheet
     
-    async def sync_gsheet_report(
-        self,
-        sprint_metadata: Optional[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """
-        Synchronizes Jira issues to the Google Sheets Dashboard.
-        Useful for real-time sprint tracking and management reporting.
-        
-        Args:
-            custom_jql (Optional[str]): Custom filter for issues. 
-                Defaults to active sprint issues.
-            sprint_metadata (Optional[Dict]): Sprint name and date range.
-            
-        Returns:
-            Dict[str, Any]: Status and sync count.
-        """
-        print("📊 Starting Google Sheets Dashboard Sync...")
-        
+    async def sync_gsheet_report(self, sprint_metadata: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Maps active Jira issues to the Google Sheets Dashboard."""
         try:
-            # 1. Determine JQL and Metadata
-            # Default logic targets the currently open sprint
             jql = "project = 'AIO Development' AND sprint in openSprints()"
-            
-            # Fallback metadata if not provided by the caller (Agent or Scheduler)
             metadata = sprint_metadata or {
                 "name": "Current Active Sprint",
                 "start_date": "2026-05-01",
                 "end_date": "2026-05-15"
             }
 
-            # 2. Fetch data from Jira
+            issues = await self.jira.get_issues_by_jql(jql)
+            if not issues:
+                return {"status": "warning", "metrics": {"processed_transactions": 0}, "message": "No issues found."}
+
+            await self.gsheet.sync_dashboard_upsert(issues, metadata)
+            return {"status": "success", "metrics": {"processed_transactions": len(issues)}}
+            
+        except Exception as e:
+            return {"status": "error", "metrics": {}, "message": f"GSheet Sync Failed: {str(e)}"}
+        
+    async def sync_jira_to_qdrant(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
+        """Synchronizes targeted Jira issues to the Qdrant Knowledge Base Cluster."""
+        try:
+            jql = custom_jql if custom_jql else 'project = "AIO Development"'
             issues = await self.jira.get_issues_by_jql(jql)
             
             if not issues:
-                return {"status": "warning", "message": "No issues found for the current filter."}
+                return {"status": "warning", "metrics": {"vector_updates_mapped": 0}, "message": "No issues extracted."}
 
-            # 3. Perform the In-place Upsert on Google Sheets
-            
-            await self.gsheet.sync_dashboard_upsert(issues, metadata)
-            
-            print(f"✅ GSheet Sync Complete: {len(issues)} issues processed.")
-            return {"status": "success", "synced_count": len(issues)}
-            
+            result = await self.qdrant.upsert_batch_to_qdrant(issues)
+            return {"status": "success", "metrics": {"vector_updates_mapped": result.get("synced", 0)}}
+        
         except Exception as e:
-            print(f"❌ GSheet Sync Failed: {str(e)}")
-            traceback.print_exc()
-            return {"status": "error", "message": str(e)}
-        
-    async def sync_jira_to_qdrant(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Synchronizes issues from a specific Jira project to the Qdrant vector database.
-        This builds the knowledge base for AI similarity searches.
-        
-        Args:
-            custom_jql (Optional[str]): Custom filter for issues. 
-            Defaults to the default JQL if None.
-
-        Returns:
-            Dict[str, Any]: Synchronization report from QdrantService.
-        """
-        print(f"📥 Starting Knowledge Base Sync")
-        
-        # 1. Fetch all relevant issues from the project
-        jql = custom_jql if custom_jql else 'project = "AIO Development"'
-        issues = await self.jira.get_issues_by_jql(jql)
-        
-        if not issues:
-            return {"status": "warning", "message": f"No issues found"}
-
-        # 2. Vectorize and Upsert to Qdrant
-        result = await self.qdrant.upsert_batch_to_qdrant(issues)
-        
-        print(f"✅ Qdrant Sync Complete: {result.get('synced', 0)} issues updated.")
-
-        return result
+            return {"status": "error", "metrics": {}, "message": f"Qdrant Sync Failed: {str(e)}"}
     
-    async def auto_issue_assignment(self, custom_jql: Optional[str] = None) -> Dict[str, int]:
-        """
-        Identifies issues and dispatches AI-driven assignee recommendations.
-        Supports dynamic JQL to allow AI Agents to scan specific projects or filters.
-        
-        Args:
-            custom_jql (Optional[str]): A specific JQL query. 
-            Defaults to 'project = "APG" AND status = "TO DO"' if None.
-
-        Returns:
-            Dict[str, int]: Statistics of the workflow run (notified vs skipped).
-        """
-        # Logic: Use the provided JQL (from an Agent) or fallback to the system default
-        jql_query = custom_jql if custom_jql else 'project = "APG" AND status = "TO DO"'
-        
-        print(f"🤖 Starting AI Assignment Workflow with JQL: {jql_query}")
-        
-        # 1. Fetch tickets based on the dynamic query
-        target_issues = await self.jira.get_issues_by_jql(jql_query)
-        
-        stats = {"notified": 0, "skipped": 0}
-        if not target_issues:
-            print("ℹ️ Workflow: No issues matched the query.")
-            return stats
-
-        for issue in target_issues:
-            issue_key = issue.metadata.key
+    async def auto_issue_assignment(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
+        """Processes AI-driven assignee allocation routines and issues Slack direct notifications."""
+        try:
+            jql_query = custom_jql if custom_jql else 'project = "APG" AND status = "TO DO"'
+            target_issues = await self.jira.get_issues_by_jql(jql_query)
             
-            # 2. Gatekeeper: Check notification history to prevent spam
-            if await self.qdrant.check_already_notified(issue_key):
-                stats["skipped"] += 1
-                continue
+            metrics = {"developers_notified": 0, "tickets_skipped": 0}
+            if not target_issues:
+                return {"status": "warning", "metrics": metrics, "message": "Empty issue array."}
 
-            try:
-                # 3. AI Research: Find similar historical context in Qdrant
+            for issue in target_issues:
+                issue_key = issue.metadata.key
+                
+                if await self.qdrant.check_already_notified(issue_key):
+                    metrics["tickets_skipped"] += 1
+                    continue
+
+                # Execute RAG knowledge base similarity search matching
                 similarity_results = await self.qdrant.search_similar_issues(
-                    query_text=issue.vector_content,
-                    limit=20,
-                    score_threshold=0.62
+                    query_text=issue.vector_content, limit=20, score_threshold=0.62
                 )
-
-                # 4. Intelligence: Perform weighted voting to select the best dev
                 decision = await self.voting.get_voting_decision(similarity_results)
 
-                # 5. Data Mapping: Merge AI insights into the issue model
+                # Merge parameters into model layer
                 issue_dict = issue.model_dump()
                 issue_dict["metadata"].update({
                     "assignee": decision.recommended_assignee,
@@ -163,141 +97,79 @@ class WorkflowService:
                     "confidence_score": decision.confidence_score
                 })
                 
-                print(f"🔍 AI Recommendation for {issue_key}: {decision.recommended_assignee} with confidence {decision.confidence_score}")
-                # 6. Interaction: Dispatch to Slack for human approval
                 success_ts = await self.slack.send_ticket_notification(issue_dict)
-                
                 if success_ts:
                     await self.qdrant.mark_as_notified(issue_key)
-                    stats["notified"] += 1
-                    print(f"✅ Notification dispatched for {issue_key}")
+                    metrics["developers_notified"] += 1
 
-            except Exception as e:
-                print(f"⚠️ Failed to process issue {issue_key}: {str(e)}")
-                traceback.print_exc()
-
-        return stats
+            return {"status": "success", "metrics": metrics}
+        
+        except Exception as e:
+            return {"status": "error", "metrics": {}, "message": f"Auto-Assignment Block Failed: {str(e)}"}
 
     async def sync_apg_status_from_ad(self, custom_jql: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Synchronizes status between development (AD) and management (APG) tickets.
-        Accepts dynamic JQL to allow flexibility in sync timeframes or projects.
-
-        Args:
-            custom_jql (Optional[str]): Query to find 'Done' development tickets.
-            Defaults to recently updated AD tickets in 'Done' status.
-
-        Returns:
-            Dict[str, Any]: Telemetry report of the synchronization process.
-        """
-        # Default JQL focuses on performance by only checking recently updated tickets
-        ad_jql = custom_jql if custom_jql else 'project = "AIO Development" AND status = "Done"'
-        
-        print(f"🔄 Executing Status Sync with JQL: {ad_jql}")
-        done_ad_issues = await self.jira.get_issues_by_jql(ad_jql)
-        
-        report = {
-            "total_ad_found": len(done_ad_issues),
-            "synced_count": 0,
-            "details": []
-        }
-
-        if not done_ad_issues:
-            return report
-
-        for ad_issue in done_ad_issues:
-            ad_key = ad_issue.metadata.key
-            apg_key = ad_issue.metadata.inward_issue_key
-            
-            sync_entry = {"ad_key": ad_key, "apg_key": apg_key, "status": "pending", "message": ""}
-
-            # Validation: Check for valid APG link
-            if not apg_key or apg_key == "None" or not apg_key.startswith("APG"):
-                sync_entry.update({"status": "ignored", "message": "No valid APG link found."})
-                report["details"].append(sync_entry)
-                continue
-
-            # State check for the target APG ticket
-            apg_search = await self.jira.get_issues_by_jql(f'key = "{apg_key}"')
-            if not apg_search:
-                sync_entry.update({"status": "error", "message": "Linked APG ticket not found."})
-                report["details"].append(sync_entry)
-                continue
-            
-            apg_issue = apg_search[0]
-            
-            # Transition APG if it is not already 'Done'
-            if apg_issue.metadata.status.upper() != "DONE":
-                print(f"⚙️ Syncing: {ad_key} -> {apg_key} (Moving to Done)")
-                update_result = await self.jira.update_issue_status(apg_key, "Done")
-                
-                if update_result.get("status") == "success":
-                    sync_entry.update({"status": "synced", "message": "Transitioned to Done."})
-                    report["synced_count"] += 1
-                else:
-                    sync_entry.update({"status": "failed", "message": update_result.get("message")})
-            else:
-                sync_entry.update({"status": "skipped", "message": "APG already in Done status."})
-
-            report["details"].append(sync_entry)
-
-        return report
-
-    async def handle_slack_interaction(self, payload: Dict[str, Any]):
-        """
-        Processes real-time user decisions from Slack buttons.
-        Updates Jira tickets and provides feedback to the user.
-        """
+        """Aligns lifecycle statuses between implementation and management tickets."""
         try:
-            # Data Extraction from Slack payload
+            ad_jql = custom_jql if custom_jql else 'project = "AIO Development" AND status = "Done"'
+            done_ad_issues = await self.jira.get_issues_by_jql(ad_jql)
+            
+            metrics = {"total_ad_found": len(done_ad_issues), "synced_count": 0}
+            if not done_ad_issues:
+                return {"status": "warning", "metrics": metrics, "message": "No sync targets found."}
+
+            for ad_issue in done_ad_issues:
+                apg_key = ad_issue.metadata.inward_issue_key
+                
+                if not apg_key or apg_key == "None" or not apg_key.startswith("APG"):
+                    continue
+
+                apg_search = await self.jira.get_issues_by_jql(f'key = "{apg_key}"')
+                if not apg_search:
+                    continue
+                
+                if apg_search[0].metadata.status.upper() != "DONE":
+                    update_result = await self.jira.update_issue_status(apg_key, "Done")
+                    if update_result.get("status") == "success":
+                        metrics["synced_count"] += 1
+
+            return {"status": "success", "metrics": metrics}
+        
+        except Exception as e:
+            return {"status": "error", "metrics": {}, "message": f"Status Sync Interrupted: {str(e)}"}
+
+    async def handle_slack_interaction(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Handles synchronous webhook user button confirmations routed from Slack blocks."""
+        try:
             action_data = payload["actions"][0]
             parts = [p.strip() for p in action_data["value"].split("|")]
-            
             action_type, apg_key, assignee_email, assignee_id, ticket_link = parts
+            
             user_mention = f"<@{payload['user']['id']}>"
             channel, ts = payload["channel"]["id"], payload["container"]["message_ts"]
 
             if action_type == "approve":
-                # Step A: Update Management Ticket
                 await self.jira.update_issue_status(apg_key, "READY FOR DEV")
-
-                # Step B: Link AD Development Ticket
-                # --- Polling Logic: Wait for Jira Automation to clone APG to AD ticket ---
-                # Automation in Jira is asynchronous and may take a few seconds to create the linked AD task.
-                # We poll every 5 seconds (up to 3 times) to handle this race condition.
                 
                 ad_issues = None
-                max_retries = 3
-                
-                for attempt in range(max_retries):
-                    print(f"🔍 [Attempt {attempt + 1}] Searching for AD task linked to {apg_key}...")
-                    # Wait 10s before the next check, totaling up to 10s if needed
-                    await asyncio.sleep(10)
-
+                for _ in range(3):
+                    await asyncio.sleep(10)  # Safe backoff interval window for Jira Automation triggers
                     ad_jql = f'project = "AIO Development" AND issueLink="{apg_key}" ORDER BY created DESC'
                     ad_issues = await self.jira.get_issues_by_jql(ad_jql)
-                    
                     if ad_issues:
-                        print(f"✅ Linked AD task found: {ad_issues[0].metadata.key}")
                         break
                     
                 if ad_issues:
                     ad_key = ad_issues[0].metadata.key
-                    # Step C: Assign Developer to AD Ticket
                     await self.jira.update_issue_assignee(ad_key, assignee_id)
-                    status_msg = (
-                        f"✅ *Approved*: <{ticket_link}|{apg_key}> updated.\n"
-                        f"Dev task <{settings.JIRA_DOMAIN_URL}/browse/{ad_key}|{ad_key}> "
-                        f"assigned to *{assignee_email}* by {user_mention}."
-                    )
+                    status_msg = f"✅ *Approved*: <{ticket_link}|{apg_key}> allocated to Dev task <{settings.JIRA_DOMAIN_URL}/browse/{ad_key}|{ad_key}> by {user_mention}."
                 else:
-                    status_msg = f"✅ *Approved*: {apg_key} updated, but no AD link found."
+                    status_msg = f"✅ *Approved*: {apg_key} status updated, but race condition met for AD cloning."
             else:
-                status_msg = f"❌ *Declined*: Suggestion for <{ticket_link}|{apg_key}> rejected by {user_mention}."
+                status_msg = f"❌ *Declined*: Recommendation query for <{ticket_link}|{apg_key}> dropped by {user_mention}."
 
-            # Update the Slack message to confirm the action
             await self.slack.update_message(channel, ts, status_msg)
 
+            return {"status": "success", "metrics": {"interaction_processed": 1}}
+            
         except Exception as e:
-            print(f"🔥 Interaction Error: {str(e)}")
-            traceback.print_exc()
+            return {"status": "error", "metrics": {}, "message": f"Interaction Handler Crashed: {str(e)}"}
