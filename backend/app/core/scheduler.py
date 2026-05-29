@@ -95,73 +95,68 @@ class WorkflowScheduler:
 
     async def _execute_dynamic_dispatch(self, job_config: JobConfig) -> None:
         """
-        Locates functions inside WorkflowService dynamically using reflection,
-        passes JQL query parameters safely based on compatibility, and triggers AI reporting.
-
-        Args:
-            job_config (JobConfig): The targeted configuration model.
+        Locates functions inside WorkflowService dynamically, normalizes structured 
+        telemetry metrics, and routes high-fidelity AI summaries directly to Slack.
         """
         job_function_name = job_config.name
         resolved_jql = job_config.custom_jql if job_config.custom_jql else job_config.default_jql
 
-        print(f"⚡ Cron Trigger Fired: Invoking '{job_function_name}' via primary Event Loop...")
+        print(f"⚡ Cron Trigger Fired: Invoking '{job_function_name}'...")
 
         try:
-            # 1. Verify existence of the targeted execution method
+            # 1. Verify target workflow existence
             if not hasattr(self.workflow, job_function_name):
-                print(f"❌ Dispatch Error: Method '{job_function_name}' is not registered inside WorkflowService.")
+                print(f"❌ Dispatch Error: Method '{job_function_name}' is not registered.")
                 return
 
             target_function = getattr(self.workflow, job_function_name)
 
-            # 2. Reflect on function signature to pass custom JQL arguments safely
+            # 2. Reflect parameters safely
             sig = inspect.signature(target_function)
-            kwargs = {}
-            if "custom_jql" in sig.parameters:
-                kwargs["custom_jql"] = resolved_jql
+            kwargs = {"custom_jql": resolved_jql} if "custom_jql" in sig.parameters else {}
 
-            # 3. Trigger asynchronous workflow execution natively
-            result = await target_function(**kwargs)
+            # 3. Execute Workflow and capture the standardized matrix
+            response = await target_function(**kwargs)
+            
+            if response.get("status") == "error":
+                raise Exception(response.get("message", "Unknown execution error"))
 
-            # 4. Parse telemetry results to build detailed log logs for the LLM Report
-            accomplished_text = f"- Executed background method `{job_function_name}` successfully using filters: `{resolved_jql}`."
-            if isinstance(result, dict):
-                if "synced_count" in result:
-                    accomplished_text += f" Processed transactions: {result['synced_count']} items."
-                elif "synced" in result:
-                    accomplished_text += f" Vector updates mapped: {result['synced']} entries."
+            # 4. Standardized Metrics Data Extraction Pipeline
+            metrics_payload = [f"- Filter Context Used: `{resolved_jql}`"]
+            metrics_dict = response.get("metrics", {})
+            
+            for key, value in metrics_dict.items():
+                clean_label = key.replace("_", " ").title()
+                metrics_payload.append(f"- {clean_label}: {value}")
 
-            # 5. Delegate report summarization to the AI Agent (Cloud API Powered with precise visual rules)
+            accomplished_text = "\n".join(metrics_payload)
+
+            # 5. Synthesize prompt using clean context blocks
             agent_prompt = inspect.cleandoc(f"""
                 You are an elite Operations Director composing a real-time Slack status update for the Engineering Team.
                 Generate a highly structured, scannable update based strictly on the context and structural templates below.
 
                 # EXECUTION CONTEXT
                 - Background Task Name: {job_function_name}
-                - Filter Used: {resolved_jql}
-                - Raw Telemetry Results: {accomplished_text}
+                - Raw Telemetry Results:
+                {accomplished_text}
 
                 # SLACK OUTPUT ARCHITECTURE (MANDATORY STRUCTURE)
-                You MUST follow this exact four-line visual layout using standard Slack Markdown. Do NOT add conversational intro fillers, chatty greetings, or preambles:
+                You MUST follow this exact four-line visual layout using standard Slack Markdown. Do NOT add conversational intro fillers:
                 
-                Line 1 (Status Header): Use a green check emoji (e.g., ✅), followed by a bold short completion label (e.g., **Sync Complete** or **Mirroring Successful**), followed by a brief summary of the pipeline execution.
-                Line 2 (Filter Details): Use a wrench emoji (🔧) followed by "Filter: " and wrap the exact JQL filter used inside inline code backticks (e.g., `project = 'AIO Development' AND created >= -8h`).
-                Line 3 (Metrics Details): Use a bar chart emoji (📊) followed by the specific transaction metric, ensuring all numbers/counts are wrapped inside bold brackets (e.g., Vector updates mapped: **1 entry** or Processed transactions: **12 items**).
-                Line 4 (Team Closing): Use a rocket emoji (🚀) followed by an encouraging, professional wrap-up phrase (e.g., "Great work, team!" or "Let's keep the momentum going!").
-
-                # REFERENCE TEMPLATE:
-                ✅ **Sync Complete** – Jira → Qdrant pipeline ran successfully!
-                🔧 Filter: `project = 'AIO Development' AND created >= -8h`
-                📊 Vector updates mapped: **1 entry**
-                🚀 Great work, team!
+                Line 1 (Status Header): Use a green check emoji (✅), followed by a bold short completion label matching the action, followed by a brief summary of execution.
+                Line 2 (Filter Details): Use a wrench emoji (🔧) followed by "Filter: " and wrap the exact JQL filter inside inline code backticks.
+                Line 3 (Metrics Details): Use a bar chart emoji (📊) followed by the specific metrics extracted from the telemetry results. Ensure ALL numbers/counts are wrapped inside bold brackets (e.g., Processed transactions: **12 items** or Developers notified: **2**, Tickets skipped: **3**).
+                Line 4 (Team Closing): Use a rocket emoji (🚀) followed by an encouraging wrap-up phrase.
             """)
+            
             report = await self.agent.run(user_input=agent_prompt, thread_id=f"cron_{job_config.id}")
             await self.slack.send_message(settings.SLACK_CHANNEL_ID, report)
             print(f"✅ Executed dynamic wrapper for '{job_function_name}' and dispatched reports.")
 
         except Exception as e:
             print(f"❌ Failure executing core task execution block for '{job_function_name}': {e}")
-            error_slack_payload = f"🚨 *Automated Task Failure in Pipeline:* Method `{job_function_name}` aborted execution with details: `{str(e)}`"
+            error_slack_payload = f"🚨 *Automated Task Failure in Pipeline:* Method `{job_function_name}` aborted with details: `{str(e)}`"
             try:
                 await self.slack.send_message(settings.SLACK_CHANNEL_ID, error_slack_payload)
             except Exception:
