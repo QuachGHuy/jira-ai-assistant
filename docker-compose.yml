@@ -10,6 +10,7 @@ services:
     volumes:
       - ./backend:/app
       - /app/.venv
+      - ./.secrets/service_account.json:/app/service_account.json:ro
     networks:
       - app-network
 

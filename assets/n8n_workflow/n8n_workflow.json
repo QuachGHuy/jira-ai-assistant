@@ -1,0 +1,1989 @@
+{
+  "name": "jira",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        176,
+        1616
+      ],
+      "id": "6089840f-2c7a-4d5c-a378-09d624b9fb63",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1104,
+        528
+      ],
+      "id": "c4d4f1f5-afc2-4b0b-a8f6-4e0fe4c69b11",
+      "name": "Loop Over Items1"
+    },
+    {
+      "parameters": {
+        "resource": "point",
+        "operation": "upsertPoints",
+        "collectionName": {
+          "__rl": true,
+          "value": "jira",
+          "mode": "list",
+          "cachedResultName": "jira"
+        },
+        "points": "=[\n    {\n      \"id\": {{ $('Extract Issues Info1').item.json.point_id }},\n      \"payload\": {\n        \"metadata\": {\n          \"key_link\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.key_link) }},\n          \"key\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.key) }},\n          \"task_name\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.task_name) }},\n          \"project\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.project) }},\n          \"type\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.type) }},\n          \"owner\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.owner) }},\n          \"owner_id\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.owner_id) }},\n          \"status\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.status) }},\n          \"priority\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.priority) }},\n          \"created_at\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.metadata.created_at) }}\n        },\n        \"content\": {{ JSON.stringify($(\"Extract Issues Info1\").item.json.knowledge_vector_content) }}\n      },\n      \"vector\": {\n        \"assignee\": [{{ $json.assignee_embedding }}],\n        \"\": [{{ $json.knowledge_embedding }}]\n      }\n    }\n  ]\n\n",
+        "ordering": "medium",
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-qdrant.qdrant",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        528
+      ],
+      "id": "88be3533-10c2-4b22-ad8f-278fc123414f",
+      "name": "Upsert Points",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "qdrantRestApi": {
+          "id": "aRas4kmtvnhl4KWj",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        944,
+        112
+      ],
+      "id": "1eadd593-11bc-4497-aaa6-204b7898a9e2",
+      "name": "Create Report"
+    },
+    {
+      "parameters": {
+        "content": "## Create Report \n**Workflow:**\n1. Get AD issues in **CURRENT SPRINT** by JQL: project = \"AIO Development\" AND sprint in openSprints()\n2. Mapping fields and Upsert into Google Sheet (mapping by key)\n3. Deleted AD issues NOT IN **CURRENT SPRINT**\n\n",
+        "height": 448,
+        "width": 1236,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        864,
+        -160
+      ],
+      "id": "46b88f63-1a54-4d88-ad05-c9da4e2eac83",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        560,
+        1616
+      ],
+      "id": "91faa759-3388-4cc6-bc06-26f841ed837c",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node nhận kết quả từ Qdrant\nconst items = $input.all();\n\nif (items.length === 0 || !items[0].json.result.points.length) {\n  return {\n    json: {\n      decision: \"MANUAL_REVIEW\",\n      suggested_assignee: \"Unassigned\",\n      suggested_assignee_id: null,\n      confidence: 0\n    }\n  };\n}\n\nconst points = items[0].json.result.points;\nconst votingMap = {};\n\n// 1. Thống kê theo Trọng số lũy thừa (Power Scaling)\nconst POWER = 2; \nlet totalScaledScore = 0;\n\npoints.forEach(p => {\n  const owner = p.payload.metadata.owner || \"Unknown\";\n  const ownerId = p.payload.metadata.owner_id || null; // Lấy assignee_id từ metadata\n  const scaledScore = Math.pow(p.score || 0, POWER);\n\n  if (!votingMap[owner]) {\n    // Lưu thêm ownerId vào map\n    votingMap[owner] = { count: 0, totalScore: 0, scaledScore: 0, assignee_id: ownerId };\n  }\n\n  votingMap[owner].count += 1;\n  votingMap[owner].totalScore += p.score;\n  votingMap[owner].scaledScore += scaledScore;\n  totalScaledScore += scaledScore;\n});\n\n// 2. Tìm người thắng cuộc dựa trên Scaled Score\nlet winner = null;\nlet winnerId = null;\nlet maxScaledScore = -1;\n\nfor (const owner in votingMap) {\n  if (votingMap[owner].scaledScore > maxScaledScore) {\n    maxScaledScore = votingMap[owner].scaledScore;\n    winner = owner;\n    winnerId = votingMap[owner].assignee_id; // Lấy ID của người thắng\n  }\n}\n\n// 3. Tính Confidence\nlet confidence = (maxScaledScore / totalScaledScore) * 100;\n\n// Trình bày lại voting_stats để debug\nconst finalStats = {};\nfor (const owner in votingMap) {\n  finalStats[owner] = {\n    count: votingMap[owner].count,\n    totalScore: votingMap[owner].totalScore,\n    assignee_id: votingMap[owner].assignee_id\n  };\n}\n\nconst slackStyleTs = (Date.now() / 1000).toFixed(6);\n\nreturn {\n  json: {\n    decision: confidence >= 60 ? \"AUTO_ASSIGN\" : \"PENDING_APPROVAL\",\n    suggested_assignee: winner,\n    suggested_assignee_id: winnerId, // Trả về thêm ID theo yêu cầu\n    confidence: Math.round(confidence),\n    ticket_info: {\n        key: $('Extract APG Issues Info').first().json.metadata.key,\n        link: $('Extract APG Issues Info').first().json.metadata.key_link\n    },\n    voting_stats: finalStats,\n    timestate: slackStyleTs\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1936,
+        1456
+      ],
+      "id": "23b1d205-6200-4cd7-995b-5fe05bc03b34",
+      "name": "Vote Assignee"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hàm thuật toán tự viết: Chuyển chuỗi Text thành Số nguyên dương (32-bit unsigned integer)\nfunction generateNumericId(str) {\n    let hash = 0;\n    if (!str || str.length === 0) return hash;\n    for (let i = 0; i < str.length; i++) {\n        let char = str.charCodeAt(i);\n        hash = ((hash << 5) - hash) + char;\n        hash = hash & hash; // Convert to 32bit integer\n    }\n    return Math.abs(hash); // Trả về số nguyên dương\n}\n\n// 2. Hàm dùng chung để làm sạch nội dung (Dùng cho cả Desc và Comments)\nfunction cleanJiraText(text) {\n    if (!text) return \"\";\n    let cleaned = text;\n    \n    // Xóa Code blocks, logs và Images\n    cleaned = cleaned.replace(/\\{noformat\\}[\\s\\S]*?\\{noformat\\}/g, '');\n    cleaned = cleaned.replace(/![^!]+!/g, '');\n    \n    // Xóa định dạng Jira (*, h1, h2...)\n    cleaned = cleaned.replace(/\\*/g, '');\n    cleaned = cleaned.replace(/h[1-6]\\.\\s*/g, '');\n    \n    // Xóa dữ liệu nhạy cảm hoặc rác hệ thống\n    cleaned = cleaned.replace(/^[ \\t]*Credentials:.*$/gim, '');\n    cleaned = cleaned.replace(/^[ \\t]*Payload:.*$/gim, '');\n    cleaned = cleaned.replace(/^[ \\t\\xA0]*(Issue report|Root cause|Fix|Impact):[ \\t\\xA0\\r]*$/gim, '');\n    \n    // Nén khoảng trống\n    return cleaned.trim().replace(/\\n{2,}/g, '\\n\\n');\n}\n\n    const cleanData = $input.all().map(item => {\n    const data = item.json;\n    const issueKey = data.key || \"\";\n    \n    // --- XỬ LÝ LOGIC CHUẨN HÓA PROJECT ---\n    let rawProject = data.fields?.parent?.fields?.summary;\n    let finalProject = \"Others\"; // Mặc định là Others\n    \n    // Nếu có tên Project và tên đó KHÔNG PHẢI là \"Customer Support\" thì mới lấy tên gốc\n    if (rawProject && rawProject !== \"Customer Support\") {\n        finalProject = rawProject;\n    }\n    // -------------------------------------\n      \n    // 1. Tạo Metadata\n    const metadataObj = {\n        key_link: data.self || \"\", \n        key: issueKey,\n        task_name: data.fields?.summary || \"\",\n        project: finalProject, // Sử dụng biến đã được lọc ở trên\n        type: data.fields?.issuetype?.name || \"\",\n        owner: data.fields?.assignee?.emailAddress || \"Unassigned\",\n        owner_id: data.fields?.assignee?.accountId || null,\n        status: data.fields?.status?.name || \"\",\n        priority: data.fields?.priority?.name || \"\",\n        created_at: data.fields?.created,\n    };\n\n    let desc = data.fields?.description || \"\";\n    \n    // 1. Xóa Code/Logs và Image (Làm đầu tiên để không can thiệp vào log thật)\n    desc = cleanJiraText(desc);\n\n    \n    // Gán vào biến\n    const assigneeText = `Project: ${metadataObj.project}\\nTask: ${metadataObj.task_name}\\nType: ${metadataObj.type}\\nDescription: ${desc || \"No descriptions found\"}.`;\n\n    const knowledgeText = `\n[ISSUE_KEY]: ${metadataObj.key}\n[CREATED_AT]: ${metadataObj.created_at}\n[TASK]: ${metadataObj.task_name}\n[CONTEXT]: Project ${metadataObj.project} | Type ${metadataObj.type} | [PRIORITY] ${metadataObj.priority}\n[STATUS]: ${metadataObj.status} | Owner: ${metadataObj.owner}\n[DESCRIPTION]:\n${cleanJiraText(data.fields?.description) || \"No descriptions found\"}\n`.trim();\n\n    // 3. Trả về cấu trúc JSON MỚI chỉ chứa 3 trường được yêu cầu\n    return {\n        json: {\n            point_id: generateNumericId(issueKey),\n            metadata: metadataObj,\n            assignee_vector_content: assigneeText,\n            knowledge_vector_content: knowledgeText // Đây là chuỗi sẽ được đưa vào node Ollama Embedding\n        }\n    };\n});\n\nreturn cleanData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        544
+      ],
+      "id": "a58f0abc-f13f-4297-b6fd-87b0ef39f52c",
+      "name": "Extract Issues Info1"
+    },
+    {
+      "parameters": {
+        "content": "## Download AD Issue & Upsert in Qdrant Cloud  \n**Workflow:**\n1. Get AD issues in **8 hours ago** by JQL:  \"project = \"AIO Development\" AND created >= -480m ORDER BY created DESC\"\n2. Extract fields & create JSON data for Qdrant\n3. Embedding vector_content (model: bge-m3:567m )\n4. Upsert Qdrant Cloud  \n\n**--->  EDIT JQL in [Get many issues 8 hours ago] to modify TIME <---**\n ",
+        "height": 496,
+        "width": 1236
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        864,
+        304
+      ],
+      "id": "1dc7315a-83d0-4223-9567-cacd228c6906",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Assignee Recommendation & Auto Assign\n**Workflow:**\n1. Get:\n**On Click**: Get all AD issues in with assignee is EMPTY by JQL: project = \"AIO Development\" AND  assignee IS EMPTY\n**On Schedule**: Get all AD issues with assignee is EMPTY in **15 minutes ago** by JQL: project = \"AIO Development\" AND created >= -15m AND assignee IS EMPTY ORDER BY created DESC\n2. Extract fields & response in JSON for Qdrant Search Point\n3. Check If Notified by Search Point in Qdrant jira-issue-check\n4. If NOT:\n  4.1. Upsert in Qdrant jira-issue-check\n  4.2. Embedding vector_content  (model: bge-m3:567m )\n  4.3 Qdrant Search Point: Search Related AD issues\n  4.4 Voting Assignee\n  4.5 Notify to Slack for **User Approve**\n  4.6 Update AD issue's Assignee\n\n**--->  EDIT JQL in [Get APG Issues in 15m ago] to modify TIME <---**",
+        "height": 976,
+        "width": 1972,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        128,
+        1232
+      ],
+      "id": "3ec58490-d9b1-41ad-af5f-34cd58ab80eb",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "bge-m3:567m"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $json.assignee_vector_content }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1456,
+        448
+      ],
+      "id": "d47871de-f6ba-4612-8c42-4c3cf4aeca9f",
+      "name": "Assignee Vector Embedding",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "alwaysOutputData": false,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "bge-m3:567m"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $json.knowledge_vector_content }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1456,
+        624
+      ],
+      "id": "3ac25c58-e6d3-4034-a60e-40aa70763bb7",
+      "name": "Knowledge Vector Embedding",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "bge-m3:567m"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $('Extract APG Issues Info').item.json.vector_content }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1552,
+        1456
+      ],
+      "id": "b5a08ac2-f679-4b70-bd69-9f88d62621d7",
+      "name": "Assignee Embedding",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "point_id",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1760,
+        528
+      ],
+      "id": "994e6516-45d4-4917-ba22-474430811f2f",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c06492a3-7124-417e-81f8-c5787939362d",
+              "name": "assignee_embedding",
+              "value": "={{ $json.embedding }}",
+              "type": "array"
+            },
+            {
+              "id": "0a406342-ef12-4850-987b-3ce1100f699c",
+              "name": "point_id",
+              "value": "={{ $('Extract Issues Info1').item.json.point_id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1600,
+        448
+      ],
+      "id": "a130f89e-e951-4ab3-9524-dcb8effea796",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "9c53beb8-3409-4e74-8ebb-e03bd14f515d",
+              "name": "knowledge_embedding",
+              "value": "={{ $json.embedding }}",
+              "type": "array"
+            },
+            {
+              "id": "be6d3af1-ab0e-42af-9f05-07d84e89e564",
+              "name": "point_id",
+              "value": "={{ $('Extract Issues Info1').item.json.point_id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1600,
+        624
+      ],
+      "id": "c7d85fed-12fc-4e18-8d98-89d34b287ff0",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseMode": "streaming"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        160,
+        144
+      ],
+      "id": "99c43d98-fc3b-4e4a-84b4-5c521afbfebe",
+      "name": "When chat message received",
+      "webhookId": "7fde6e33-72c9-4c2f-b166-573628c13363"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Role: Senior Project Manager & Technical Support Expert.\nObjective: Analyze and summarize Jira information using the qdrant_jira_tool.\n\nCore Retrieval Strategy:\n\n    Technical/Error Queries: Prioritize content fields for solutions and technical details.\n\nOperating Guidelines:\n\n    Integrity: Strictly no hallucinations. If data is missing, respond: \"Not found in Jira Qdrant.\"\n\n    Logic: For error-related queries, synthesize \"Root Cause\" and \"Fix\" based on ticket comments.\n\n    Verification: Confirm the specific Ticket Key (e.g., AD-XXX) or Project name before performing deep analysis.\n\n    Conciseness: Limit responses to ~200 words unless a detailed breakdown is explicitly requested.\n\nResponse Formatting:\n\n    Standard: Clear Markdown structure.\n\n    Lists/Comparisons: Always use Markdown Tables.\n\n    Status Format: [Key] - [Summary] | Statusi: [Status]\n\nInteraction Examples:\n\n    Priority: When asked for recent tasks, sort by created_at in the metadata.\n\n    Ambiguity: If multiple tickets match, list the most relevant ones and ask the user which to detail.\n\nTone & Language:\n\n    Style: Professional, concise, and solution-oriented.",
+          "enableStreaming": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        368,
+        144
+      ],
+      "id": "31b6146c-b83c-4adb-adf7-97f8bd13c1b3",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 15
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        416,
+        352
+      ],
+      "id": "d54262bb-c661-468e-9638-97f1286f4f6f",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "model": "bge-m3:567m"
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [
+        576,
+        544
+      ],
+      "id": "f22cc173-9c88-4520-9442-3a0fbe704ee9",
+      "name": "Embeddings Ollama",
+      "credentials": {
+        "ollamaApi": {
+          "id": "H44zVYzRKHVfViAh",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Chat Agent\n**Workflow:**\n1. Get User's prompt from chat box\n2. Embedding (model: bge-m3:567m)\n3. Search into Qdrant Vector Store (default)\n4. Chat model response to User \n\n**--->  EDIT SYSTEM MESSAGE  in [AI Agent] to modify LLMs Instruction  <---**\n**--->  EDIT DESCRIPTION  in [qdran_jira_tool] to modify Tool Instruction  <---**",
+        "height": 1376,
+        "width": 720,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        128,
+        -160
+      ],
+      "id": "81d3d214-0998-4ab9-8865-0189e394be05",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Role: You are a specialized assistant for performing Filtered Vector Search on Jira tickets. Your goal is to retrieve accurate data by combining semantic meaning (Vector) with strict constraints (Metadata).\n⚠️ CRITICAL CONSTRAINTS (MUST FOLLOW)\n\n    The \"Split\" Mandate: You MUST separate the user's request into two parts:\n\n        input (Semantic): The core topic, keywords, or intent (e.g., \"ASR issues\", \"blockers\"). NEVER leave this empty.\n\n        filter (Strict): The metadata scope (Project, Owner, Status, ID).\n\n    Current Date Context: The current year is 2026. All relative date queries (e.g., \"this month\", \"since last week\") must be calculated based on April 2026.\n\n    Case Sensitivity: Metadata values are strictly case-sensitive. Use exact strings like \"Shift Rostering\" or \"Done\".\n\n    No Intent in Filter: Do NOT put semantic search terms (e.g., \"bug fixing\") inside the filter object. Only exact keys and values are allowed.\n\n🛠 PARAMETER DEFINITION\n1. input (String)\n\n    Content: Descriptive keywords for semantic search.\n\n    Rule: If the user provides a specific ID (e.g., \"AD-278\"), the input should be that ID.\n\n2. filter (Object - Qdrant JSON)\n\nUse the {\"must\": [...]} structure with match for keywords and range for dates.\nField\tMetadata Key\tType\tExamples\nTicket ID\tmetadata.key\tKeyword\t\"AD-278\", \"AD-28\"\nProject\tmetadata.project\tKeyword\t\"Shift Rostering\", \"Others\"\nAssignee\tmetadata.owner\tKeyword\t\"quang@workforceoptimizer.com\"\nStatus\tmetadata.status\tKeyword\t\"To Do\", \"Done\", \"Stuck\"\nPriority\tmetadata.priority\tKeyword\t\"S1-Critical\", \"S3-Moderate\"\nIssue Type\tmetadata.type\tKeyword\t\"Epic\", \"Task\", \"Subtask\"\nCreated At\tmetadata.created_at\tDate\tISO 8601 strings\n🧠 STEP-BY-STEP THINKING PROCESS\n\nBefore generating the parameters, perform these steps internally:\n\n    Identify the Scope: Is there a specific Project, Owner, or ID? (Add to filter).\n\n    Identify the Topic: What is the user actually looking for? (Add to input).\n\n    Handle IDs: If an ID is present, it MUST go into both input and metadata.key to ensure 100% precision.\n\n    Format Dates: Convert relative time to ISO 8601 for the range filter.\n\n📖 EXAMPLES\nExample 1: Topic + Scope\n\n    User: \"Find tickets about 'ASR to Rust' in project 'Shift Rostering'\"\n\n    Result:\n\nJSON\n\n{\n  \"input\": \"ASR to Rust\",\n  \"filter\": {\n    \"must\": [\n      { \"key\": \"metadata.project\", \"match\": { \"value\": \"Shift Rostering\" } }\n    ]\n  }\n}\n\nExample 2: Specific Ticket ID (Exact Search)\n\n    User: \"Show me ticket AD-278\"\n\n    Result:\n\nJSON\n\n{\n  \"input\": \"AD-278\",\n  \"filter\": {\n    \"must\": [\n      { \"key\": \"metadata.key\", \"match\": { \"value\": \"AD-278\" } }\n    ]\n  }\n}\n\nExample 3: Date Range + Status\n\n    User: \"Which tasks are 'Done' by Quang since April 1st, 2026?\"\n\n    Result:\n\nJSON\n\n{\n  \"input\": \"Completed tasks\",\n  \"filter\": {\n    \"must\": [\n      { \"key\": \"metadata.owner\", \"match\": { \"value\": \"quang@workforceoptimizer.com\" } },\n      { \"key\": \"metadata.status\", \"match\": { \"value\": \"Done\" } },\n      { \"key\": \"metadata.created_at\", \"range\": { \"gte\": \"2026-04-01T00:00:00Z\" } }\n    ]\n  }\n}\n\n⚙️ N8N NODE CONFIGURATION REMINDER\n\n    Search Query: {{ $json.input }}\n\n    Search Filter: {{ $json.filter }}\n\n    Note: Ensure the Agent passes the filter as a valid JSON object. Do not use JSON.parse() in the node if the data is already structured.",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "jira",
+          "mode": "list",
+          "cachedResultName": "jira"
+        },
+        "topK": 20,
+        "options": {
+          "searchFilterJson": "={{ $json.filter }}",
+          "contentPayloadKey": "content",
+          "metadataPayloadKey": "metadata"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [
+        576,
+        352
+      ],
+      "id": "4ebe9329-ae1c-468e-bcdd-815858fe4ba9",
+      "name": "qdrant_jira_tool",
+      "credentials": {
+        "qdrantApi": {
+          "id": "aUyEbefQMw5NZmmN",
+          "name": "Qdrant account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "apac2026-t2-mcp-adk",
+          "mode": "list",
+          "cachedResultName": "apac2026-t2-mcp-adk"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+      "typeVersion": 1,
+      "position": [
+        272,
+        352
+      ],
+      "id": "05078ffb-82db-4daa-90e7-5c339c006e35",
+      "name": "Google Vertex Chat Model",
+      "credentials": {
+        "googleApi": {
+          "id": "REeZHpUVCXMCdt04",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1136,
+        1840
+      ],
+      "id": "86ac0c3e-e590-404e-ba6f-e23c8a0577d5",
+      "name": "Wait",
+      "webhookId": "afcca930-461d-4e94-be54-27d6ad87b3fd"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1120,
+        1040
+      ],
+      "id": "416550e2-df3c-4b74-9ee2-9747dbc779c2",
+      "name": "Loop Over Items3"
+    },
+    {
+      "parameters": {
+        "content": "## Sync AIO Development ticket's status to APG \n**Workflow:**\n1. Get all **DONE** AD issues  in **8 hours ago** by JQL:  \"project = \"AIO Development\" AND status = \"Done\" AND created >= -480m ORDER BY created DECS\"\n2. Extract to get APG issueKey\n3. Get APG  issues by APG issueKey\n4. Check If APG ticket' status is **NOT DONE** --> Sync status to **APG**\n\n**--->  EDIT JQL in [Get AD Issues in 8 hours ago] to modify TIME <---**",
+        "height": 400,
+        "width": 1236,
+        "color": "#CDAB8F"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        864,
+        816
+      ],
+      "id": "0f02a997-35b3-44cf-86a3-4fd30ebfd67f",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "channelId": {
+          "__rl": true,
+          "value": "C0B0FEYPG7M",
+          "mode": "list",
+          "cachedResultName": "jira-ticket-alert"
+        },
+        "ts": "={{ $('Extract APG Issues from Slack API').item.json.message_ts }}",
+        "text": "=✅ Approved: Ticket <{{ $('Extract APG Issues from Slack API').item.json.key_link }}|{{ $('Extract APG Issues from Slack API').item.json.key }}> has been assigned to {{ $('Extract APG Issues from Slack API').item.json.assignee }}.",
+        "updateFields": {},
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1936,
+        1840
+      ],
+      "id": "76229a55-d3d9-41fa-b45d-5f4f7ece709c",
+      "name": "Confirm Updated Message",
+      "webhookId": "35aa5924-a8af-4345-8bb8-feac8a1f9650",
+      "credentials": {
+        "slackApi": {
+          "id": "R5EruXN6CbZUlh8K",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "channelId": {
+          "__rl": true,
+          "value": "C0B0FEYPG7M",
+          "mode": "list",
+          "cachedResultName": "jira-ticket-alert"
+        },
+        "ts": "={{ $json.message_ts }}",
+        "text": "=❌ Recommendation Declined: The suggested assignee {{ $json.assignee }} for <{{ $json.key_link }}|{{ $json.key }}> was not accepted. Please assign a member manually in Jira.",
+        "updateFields": {},
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        944,
+        2032
+      ],
+      "id": "737e75e7-d76c-4058-a2f9-2ccc404118a9",
+      "name": "Confirm Declined Message",
+      "webhookId": "1ed79f43-dc59-4e1f-b645-ccec9cf29731",
+      "credentials": {
+        "slackApi": {
+          "id": "R5EruXN6CbZUlh8K",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "point",
+        "operation": "retrievePoint",
+        "collectionName": {
+          "__rl": true,
+          "value": "apg-issue-check",
+          "mode": "list",
+          "cachedResultName": "apg-issue-check"
+        },
+        "id": "={{ $json.apg_key }}",
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-qdrant.qdrant",
+      "typeVersion": 1,
+      "position": [
+        944,
+        1616
+      ],
+      "id": "b8316f39-109a-48e7-adc6-5c9686d14e7f",
+      "name": "Check if APG notified",
+      "alwaysOutputData": true,
+      "credentials": {
+        "qdrantRestApi": {
+          "id": "aRas4kmtvnhl4KWj",
+          "name": "Qdrant account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b9791e23-2766-44d9-8c4f-09f33a3a1d9d",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1136,
+        1616
+      ],
+      "id": "01da47bd-5bf1-453d-9a27-ddaca354796d",
+      "name": "If NOT"
+    },
+    {
+      "parameters": {
+        "resource": "point",
+        "operation": "upsertPoints",
+        "collectionName": {
+          "__rl": true,
+          "value": "apg-issue-check",
+          "mode": "list",
+          "cachedResultName": "apg-issue-check"
+        },
+        "points": "=[\n    {\n      \"id\": {{ $('Extract APG Issues Info').item.json.point_id }},\n      \"vector\": {}\n    }\n]",
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-qdrant.qdrant",
+      "typeVersion": 1,
+      "position": [
+        1344,
+        1456
+      ],
+      "id": "10546b5d-e303-47f3-aaa5-c729ed0b8cc1",
+      "name": "Upsert APG issue Points",
+      "credentials": {
+        "qdrantRestApi": {
+          "id": "aRas4kmtvnhl4KWj",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hàm thuật toán: Chuyển chuỗi Text thành Số nguyên dương (32-bit) làm Point ID cho Qdrant\nfunction generateNumericId(str) {\n    let hash = 0;\n    if (!str || str.length === 0) return hash;\n    for (let i = 0; i < str.length; i++) {\n        let char = str.charCodeAt(i);\n        hash = ((hash << 5) - hash) + char;\n        hash = hash & hash; // Convert to 32bit integer\n    }\n    return Math.abs(hash); \n}\n\nconst cleanData = $input.all().map(item => {\n    const data = item.json;\n    const issueKey = data.key || \"\";\n    \n    // --- 1. XỬ LÝ LOGIC CHUẨN HÓA PROJECT ---\n    let rawProject = data.fields?.parent?.fields?.summary;\n    let finalProject = \"Others\"; \n    if (rawProject && rawProject !== \"Customer Support\") {\n        finalProject = rawProject;\n    }\n    \n    const metadataObj = {\n        key_link: data.self || \"\", \n        key: issueKey,\n        task_name: data.fields?.summary || \"\",\n        project: finalProject,\n        type: data.fields?.issuetype?.name || \"\",\n        owner: data.fields?.assignee?.emailAddress || \"Unassigned\",\n        status: data.fields?.status?.name || \"\",\n        priority: data.fields?.priority?.name || \"\"\n    };\n\n    let rawDesc = data.fields?.description || \"\";\n    \n    // --- 2. TẠO AI_DESC (Dành cho Embedding/RAG) ---\n    let aiDesc = rawDesc;\n    aiDesc = aiDesc.replace(/\\{code[:\\w]*\\}[\\s\\S]*?\\{code\\}/g, '');\n    aiDesc = aiDesc.replace(/\\{noformat\\}[\\s\\S]*?\\{noformat\\}/g, '');\n    aiDesc = aiDesc.replace(/\\{quote\\}[\\s\\S]*?\\{quote\\}/g, '');\n    aiDesc = aiDesc.replace(/![^!]+!/g, ''); \n    \n    const technicalSections = [\"More Details\", \"Credentials\", \"Environment\", \"Roster date\", \"JobId\", \"cURL\"];\n    technicalSections.forEach(section => {\n        const reg = new RegExp(`${section}:[\\\\s\\\\S]*$`, 'i');\n        aiDesc = aiDesc.replace(reg, '');\n    });\n\n    aiDesc = aiDesc.replace(/h[1-6]\\.\\s*/g, '');\n    aiDesc = aiDesc.replace(/[\\*_]/g, '');\n    aiDesc = aiDesc.trim().replace(/\\n{2,}/g, '\\n\\n');\n\n    // --- 3. TẠO SLACK_DESC (Đã sửa lỗi Regex Invalid Group) ---\n    let slackDisplayDesc = rawDesc;\n\n    // A. Xóa ảnh và file đính kèm rác [^...]\n    slackDisplayDesc = slackDisplayDesc.replace(/![^!]+!/g, ''); \n    slackDisplayDesc = slackDisplayDesc.replace(/\\[\\^[^\\]]+\\]/g, ''); \n\n    // B. Chuyển đổi các khối code\n    slackDisplayDesc = slackDisplayDesc.replace(/\\{code[:\\w]*\\}|\\{code\\}|\\{noformat\\}|\\{quote\\}/g, '\\n```\\n');\n\n    // C. Xử lý tiêu đề h1-h6\n    slackDisplayDesc = slackDisplayDesc.replace(/h[1-6]\\.\\s*(.*?)(?:\\r?\\n|$)/g, '*$1*\\n');\n\n    // D. Bôi đậm các Header kỹ thuật (SỬA LỖI TẠI ĐÂY)\n    const slackHeaders = [\n        \"Environment\", \"Test case\", \"Actual result\", \"Expected result\", \n        \"More details\", \"JobId & Payload\", \"References\", \"Credentials\", \n        \"Issue report\", \"Root cause\", \"Fix\", \"Impact\"\n    ];\n    \n    slackHeaders.forEach(header => {\n        // Loại bỏ (?i) bên trong chuỗi, sử dụng flag 'gi' ở tham số thứ 2\n        // (?<!\\*) giúp tránh bôi đậm chồng lên nội dung đã có dấu sao\n        const reg = new RegExp(`(?<!\\\\*)${header}:`, 'gi');\n        slackDisplayDesc = slackDisplayDesc.replace(reg, `*${header}:*`);\n    });\n\n    // E. Dọn dẹp khoảng trắng\n    slackDisplayDesc = slackDisplayDesc.trim()\n        .replace(/\\n{3,}/g, '\\n\\n')\n        .replace(/^\\s*[\\r\\n]/gm, '');\n\n    if (slackDisplayDesc.length > 2500) {\n        slackDisplayDesc = slackDisplayDesc.substring(0, 2500) + \"... (Xem thêm tại Jira)\";\n    }\n\n    // --- 4. KẾT QUẢ CUỐI CÙNG ---\n    return {\n        json: {\n            point_id: generateNumericId(issueKey), \n            apg_key: issueKey,\n            metadata: metadataObj,\n            vector_content: `Project: ${metadataObj.project}\\nTask: ${metadataObj.task_name}\\nDescription: ${aiDesc}`,\n            slack_desc: slackDisplayDesc \n        }\n    };\n});\n\nreturn cleanData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        1616
+      ],
+      "id": "95981b2e-5258-400c-8f99-e77d450b449a",
+      "name": "Extract APG Issues Info"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1DA45crG3-hGaNpxEoq0vt_4Kr2hvaG47OklFu5waCqc",
+          "mode": "list",
+          "cachedResultName": "Report",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DA45crG3-hGaNpxEoq0vt_4Kr2hvaG47OklFu5waCqc/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Dashboard",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DA45crG3-hGaNpxEoq0vt_4Kr2hvaG47OklFu5waCqc/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Key": "={{ $json.key }}",
+            "Key link": "==HYPERLINK(\"https://workforceoptimizer.jira.com/browse/{{ $json.key }}\", \"{{ $json.key }}\")",
+            "Priority": "={{ $json.fields.priority.name }}",
+            "Owner": "={{ $json.fields.assignee.displayName }}",
+            "Status": "={{ $json.fields.status.name }}",
+            "Task Name": "={{ $json.fields.summary }}",
+            "Type": "={{ $json.fields.issuetype.name }}",
+            "Project": "={{ $json.fields.parent.fields.summary }}"
+          },
+          "matchingColumns": [
+            "Key"
+          ],
+          "schema": [
+            {
+              "id": "Key link",
+              "displayName": "Key link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Key",
+              "displayName": "Key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Task Name",
+              "displayName": "Task Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Project",
+              "displayName": "Project",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Type",
+              "displayName": "Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Owner",
+              "displayName": "Owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "21/04/2026",
+              "displayName": "21/04/2026",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "22/04/2026",
+              "displayName": "22/04/2026",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "23/04/2026",
+              "displayName": "23/04/2026",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "24/04/2026",
+              "displayName": "24/04/2026",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "28/04/2026",
+              "displayName": "28/04/2026",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "locationDefine": {
+            "values": {
+              "headerRow": 8,
+              "firstDataRow": 9
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1456,
+        -48
+      ],
+      "id": "d7ceddd7-6173-4a24-be1b-a21245184731",
+      "name": "Upsert Rows in Sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "REeZHpUVCXMCdt04",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "jql": "project = \"AIO Development\" "
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        928,
+        528
+      ],
+      "id": "c3b9f66b-d0cb-4a71-8847-8b8aa04cb293",
+      "name": "Get AD Issues 8 hours ago",
+      "retryOnFail": true,
+      "alwaysOutputData": false,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "jql": "project = \"AIO Development\" AND status = \"Done\" AND created >= -480m ORDER BY created DESC"
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        928,
+        1040
+      ],
+      "id": "65d537ac-6045-4466-8406-143c632e23d2",
+      "name": "Get AD Issues in 8 hours ago",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "issueKey": "={{ $json.metadata.apg_key }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        1040
+      ],
+      "id": "44ac86cb-52ae-40f4-b0e0-95569d48444e",
+      "name": "Get APG Issue by apg_key",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ec876978-926e-4225-81a1-9234e8d10161",
+              "leftValue": "={{ $json.fields.statusCategory.name }}",
+              "rightValue": "Done",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1712,
+        1040
+      ],
+      "id": "e429da3d-5a5f-40c3-8460-b1020cb4a5ab",
+      "name": "Check If Status is NOT DONE"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "issueKey": "={{ $json.metadata.apg_id }}",
+        "updateFields": {
+          "statusId": {
+            "__rl": true,
+            "value": "31",
+            "mode": "list",
+            "cachedResultName": "Done"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1904,
+        1040
+      ],
+      "id": "b608cf60-b3c8-4fcb-bc00-a16714d813d4",
+      "name": "Sync APG Issue's Status",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "jql": "project = \"APG\" AND status = \"TO DO\" "
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        752,
+        1408
+      ],
+      "id": "5d5724c9-c7f9-4f0f-91bc-5f147800b217",
+      "name": "Get APG Issues With Status = \"TO DO\"",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "jql": "project = \"APG\" AND status = \"TO DO\" AND created >= -15m ORDER BY created DESC"
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        352,
+        1616
+      ],
+      "id": "a8b30727-7db8-43b3-b1d6-c67a5ef8ab05",
+      "name": "Get APG Issues in 15m ago",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cleanData = $input.all().map(item => {\n    const data = item.json;\n    const issueKey = data.key || \"\";\n    \n    // --- XỬ LÝ LOGIC CHUẨN HÓA PROJECT ---\n    let rawProject = data.fields?.parent?.fields?.summary;\n    let finalProject = \"Others\"; \n    if (rawProject && rawProject !== \"Customer Support\") {\n        finalProject = rawProject;\n    }\n    \n    // 1. Tạo Metadata\n    const metadataObj = {\n        key_link: data.self || \"\", \n        key: issueKey,\n        apg_key: data.fields?.issuelinks[0]?.inwardIssue?.key || \"Null\",\n        task_name: data.fields?.summary || \"\",\n        project: finalProject,\n        type: data.fields?.issuetype?.name || \"\",\n        owner: data.fields?.assignee?.emailAddress || \"Unassigned\",\n        status: data.fields?.status?.name || \"\",\n        priority: data.fields?.priority?.name || \"\"\n    };\n\n    return {\n        json: {\n            metadata: metadataObj\n        }\n    };\n});\n\nreturn cleanData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        1040
+      ],
+      "id": "953bfb93-74ee-40dd-a03b-b7b7d2ada430",
+      "name": "Extract AD Issues Info"
+    },
+    {
+      "parameters": {
+        "resource": "search",
+        "operation": "queryPoints",
+        "collectionName": {
+          "__rl": true,
+          "value": "jira",
+          "mode": "list",
+          "cachedResultName": "jira"
+        },
+        "query": "=[{{ $json.embedding }}]",
+        "scoreThreshold": 0.62,
+        "limit": 20,
+        "using": "assignee",
+        "filter": "{\n  \"must_not\": [\n    {\n      \"key\": \"metadata.status\",\n      \"match\": {\n        \"value\": \"Closed\"\n      }\n    }\n  ]\n}",
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-qdrant.qdrant",
+      "typeVersion": 1,
+      "position": [
+        1744,
+        1456
+      ],
+      "id": "4e04354f-599b-424c-a1ec-4af15c65c137",
+      "name": "Query Related AD Issues",
+      "credentials": {
+        "qdrantRestApi": {
+          "id": "aRas4kmtvnhl4KWj",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0B0FEYPG7M",
+          "mode": "list",
+          "cachedResultName": "jira-ticket-alert"
+        },
+        "messageType": "block",
+        "blocksUi": "={\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"🎯 AI Assignee Recommendation\",\n        \"emoji\": true\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Ticket:* <{{ $json.ticket_info.link }}|{{ $json.ticket_info.key }}>\\n*Task:* {{ JSON.stringify($('Extract APG Issues Info').item.json.metadata.task_name).slice(1, -1) }}\\n*Project:* {{ $('Extract APG Issues Info').item.json.metadata.project }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Type:*\\n{{ $('Extract APG Issues Info').item.json.metadata.type || 'N/A' }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Priority:*\\n{{ $('Extract APG Issues Info').item.json.metadata.priority || 'N/A' }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Technical Details & Description:*\\n> {{ JSON.stringify($('Extract APG Issues Info').item.json.slack_desc).slice(1, -1) }}\"\n      }\n    },\n    {\n      \"type\": \"divider\"\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"👤 *AI Recommendation:* *{{ $json.suggested_assignee }}*\\n💡 *Confidence:* {{ $json.confidence }}%\"\n      }\n    },\n    {\n      \"type\": \"actions\",\n      \"elements\": [\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"text\": \"Approve\",\n            \"emoji\": true\n          },\n          \"style\": \"primary\",\n          \"value\": \"approve|{{ $json.ticket_info.key }}|{{ $json.suggested_assignee }}|{{ $json.suggested_assignee_id }}|{{ $json.ticket_info.link }}\",\n          \"action_id\": \"approve_btn\"\n        },\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"text\": \"Decline\",\n            \"emoji\": true\n          },\n          \"style\": \"danger\",\n          \"value\": \"decline|{{ $json.ticket_info.key }}|{{ $json.suggested_assignee }}|{{ $json.suggested_assignee_id }}|{{ $json.ticket_info.link }}\",\n          \"action_id\": \"decline_btn\"\n        }\n      ]\n    }\n  ]\n}",
+        "text": "=🎯 New submitted ticket {{ $json.ticket_info.key }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1936,
+        1600
+      ],
+      "id": "4b981986-c52f-4f3f-962b-03e5b8b6c98e",
+      "name": "Send Notification",
+      "webhookId": "fbfac3f8-d38d-4626-b36e-a35770d98164",
+      "credentials": {
+        "slackApi": {
+          "id": "R5EruXN6CbZUlh8K",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "59c35e62-c6bb-4eb2-aea7-100b1acb97ae",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        176,
+        1856
+      ],
+      "id": "7d6e87b2-99ae-4a32-9043-b5fec3635519",
+      "name": "Listen to Slack API",
+      "webhookId": "59c35e62-c6bb-4eb2-aea7-100b1acb97ae"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        560,
+        1856
+      ],
+      "id": "f33964d9-81a8-454c-98d1-23d481cb32cb",
+      "name": "Respond to Slack API"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Giải mã payload từ Slack\nconst payload = JSON.parse($json.body.payload);\nconst actionValue = payload.actions[0].value; \n\n// 2. Tách dữ liệu bằng dấu gạch đứng \"|\"\n// Cấu trúc hiện tại trong value: [action|key|assignee_email|assignee_id|key_link]\nconst parts = actionValue.split('|');\n\nreturn {\n  action: parts[0],                // \"approve\" hoặc \"decline\"\n  key: parts[1],                   // \"APG-125\"\n  assignee: parts[2] || null,      // Email: \"tri.vo@workforceoptimizer.com\"\n  assignee_id: parts[3] || null,   // ID: \"62714a79e51c620070bd2a13\"\n  key_link: parts[4],              // URL Jira ticket\n  message_ts: payload.container.message_ts // Dùng để update/xóa tin nhắn Slack\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        1856
+      ],
+      "id": "8ec3e9da-c03b-4471-821e-6b3faac8c52d",
+      "name": "Extract APG Issues from Slack API"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "58cb806f-1868-4c64-a608-cd83c8b7a993",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        752,
+        1856
+      ],
+      "id": "7032b6ee-12d8-4b62-ace2-5636e40f06b5",
+      "name": "Check If Approved"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "issueKey": "={{ $json.key }}",
+        "updateFields": {
+          "assignee": {
+            "__rl": true,
+            "value": "={{ $('Check If Approved').item.json.assignee_id}}",
+            "mode": "id"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1744,
+        1840
+      ],
+      "id": "4acdfd27-5fb0-4787-b2fe-6e4512e386c0",
+      "name": "Update AD Issue's ASSIGNEE",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "issueKey": "={{ $json.fields.issuelinks[0].outwardIssue.key }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1536,
+        1840
+      ],
+      "id": "c65260e0-c869-4646-9be3-e783f55cb5b7",
+      "name": "Get AD Issue",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "issueKey": "={{ $('Check If Approved').item.json.key }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        1840
+      ],
+      "id": "de2bd5c3-f4c7-4ac4-a223-d4e5a49bd9e5",
+      "name": "Get APG Issue",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "issueKey": "={{ $json.key }}",
+        "updateFields": {
+          "statusId": {
+            "__rl": true,
+            "value": "2",
+            "mode": "list",
+            "cachedResultName": "READY FOR DEV"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        944,
+        1840
+      ],
+      "id": "d2e3d3af-da9a-4eb6-8a66-5565a4b0a6f1",
+      "name": "Update APG Issue's STATUS",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To",
+          "mode": "list",
+          "cachedResultName": "AIO report test",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "=Key",
+              "lookupValue": "={{ $json.key }}"
+            }
+          ]
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "specifyRange",
+              "headerRow": 8,
+              "firstDataRow": 9
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1456,
+        112
+      ],
+      "id": "49d0be5e-0351-483b-ba42-d39873b3af7c",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "REeZHpUVCXMCdt04",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "delete",
+        "documentId": {
+          "__rl": true,
+          "value": "1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To",
+          "mode": "list",
+          "cachedResultName": "AIO report test",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CRgVjDl2KY_e3o4fpdRiH0z4jQCeN6ghnnSd-GYZ6To/edit#gid=0"
+        },
+        "startIndex": "={{ $json.row_to_process }}"
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1840,
+        112
+      ],
+      "id": "fd7defdb-4057-471a-9e5f-c10721216aa4",
+      "name": "Delete rows or columns from sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "REeZHpUVCXMCdt04",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "jql": "project = \"AIO Development\" AND sprint in openSprints()"
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        112
+      ],
+      "id": "2766729e-a803-41c5-9050-e72cafd1ca03",
+      "name": "Get AD Issues in SPRINT",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "WAawPK56Dtxa234b",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cấu hình phạm vi hàng\nconst start_row = 9; \nconst end_row = 60;\n\n// 1. Tạo list số nguyên từ start_row tới end_row (row_index)\nlet row_index = [];\nfor (let i = start_row; i <= end_row; i++) {\n    row_index.push(i);\n}\n\n// 2. Lấy TOÀN BỘ danh sách row_number từ input\nconst existing_numbers = $input.all().map(item => Number(item.json.row_number));\n\n// 3. Lọc (Delete): Chỉ giữ lại những số KHÔNG nằm trong mảng existing_numbers\nlet final_list = row_index.filter(num => !existing_numbers.includes(num));\n\n// 4. SẮP XẾP GIẢM DẦN (DESC)\n// (a, b) => b - a sẽ đưa số lớn lên trước\nfinal_list.sort((a, b) => b - a);\n\n// 5. Trả về kết quả dưới dạng mảng object để n8n có thể dùng ở bước sau\nreturn final_list.map(num => ({\n    row_to_process: num\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        112
+      ],
+      "id": "0093138b-b287-469d-8b99-c7107cc9508a",
+      "name": "Get row number of issue not in SPRINT"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get APG Issues in 15m ago",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Extract Issues Info1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Points": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Report": {
+      "main": [
+        [
+          {
+            "node": "Get AD Issues 8 hours ago",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get AD Issues in 8 hours ago",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get APG Issues With Status = \"TO DO\"",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get AD Issues in SPRINT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Extract APG Issues Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Issues Info1": {
+      "main": [
+        [
+          {
+            "node": "Assignee Vector Embedding",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Knowledge Vector Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vote Assignee": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assignee Vector Embedding": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Knowledge Vector Embedding": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assignee Embedding": {
+      "main": [
+        [
+          {
+            "node": "Query Related AD Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Upsert Points",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Ollama": {
+      "ai_embedding": [
+        [
+          {
+            "node": "qdrant_jira_tool",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "qdrant_jira_tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Vertex Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Get APG Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items3": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Extract AD Issues Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if APG notified": {
+      "main": [
+        [
+          {
+            "node": "If NOT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If NOT": {
+      "main": [
+        [
+          {
+            "node": "Upsert APG issue Points",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert APG issue Points": {
+      "main": [
+        [
+          {
+            "node": "Assignee Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract APG Issues Info": {
+      "main": [
+        [
+          {
+            "node": "Check if APG notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AD Issues 8 hours ago": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AD Issues in 8 hours ago": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get APG Issue by apg_key": {
+      "main": [
+        [
+          {
+            "node": "Check If Status is NOT DONE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Status is NOT DONE": {
+      "main": [
+        [
+          {
+            "node": "Sync APG Issue's Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get APG Issues With Status = \"TO DO\"": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get APG Issues in 15m ago": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract AD Issues Info": {
+      "main": [
+        [
+          {
+            "node": "Get APG Issue by apg_key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Related AD Issues": {
+      "main": [
+        [
+          {
+            "node": "Vote Assignee",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listen to Slack API": {
+      "main": [
+        [
+          {
+            "node": "Extract APG Issues from Slack API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Slack API": {
+      "main": [
+        [
+          {
+            "node": "Check If Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract APG Issues from Slack API": {
+      "main": [
+        [
+          {
+            "node": "Respond to Slack API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Approved": {
+      "main": [
+        [
+          {
+            "node": "Update APG Issue's STATUS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Confirm Declined Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update AD Issue's ASSIGNEE": {
+      "main": [
+        [
+          {
+            "node": "Confirm Updated Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AD Issue": {
+      "main": [
+        [
+          {
+            "node": "Update AD Issue's ASSIGNEE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get APG Issue": {
+      "main": [
+        [
+          {
+            "node": "Get AD Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update APG Issue's STATUS": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Rows in Sheet": {
+      "main": [
+        []
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Get row number of issue not in SPRINT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AD Issues in SPRINT": {
+      "main": [
+        [
+          {
+            "node": "Upsert Rows in Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete rows or columns from sheet": {
+      "main": [
+        []
+      ]
+    },
+    "Get row number of issue not in SPRINT": {
+      "main": [
+        [
+          {
+            "node": "Delete rows or columns from sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "af419dfa-276d-480c-9d76-2ccab6f18dbd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1bc99836f5e1094e4efacb41ad948070d788da105801c9fffccc818f4b427681"
+  },
+  "id": "Pe4K56koY2Mr4zAW",
+  "tags": []
+}
